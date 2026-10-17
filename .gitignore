@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+
+# Large Raw Archives (Data already loaded into DuckDB)
+Data/
+aconex_full_raw.duckdb
+*.tmp
+*.log
+Logs/
+
+# Scratch & Debug Scripts
+scratch/
+scratch_*.py
+dump_*.py
+dump_*.txt
+check_*.py
+update_*.py
+apply_full_ui_upgrade.py
+
+# OS & IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

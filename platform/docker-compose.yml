@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  aconex-platform:
+    build: .
+    container_name: aconex_pmc_platform
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app/backend
+      - ../aconex.duckdb:/app/aconex.duckdb
+    restart: unless-stopped
+    environment:
+      - PYTHONUNBUFFERED=1
