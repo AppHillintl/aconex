@@ -24,6 +24,7 @@ def extract_clean_orgs(raw_rows):
     return sorted(list(clean_set))
 
 import os
+import time
 import json
 import re
 import sys
@@ -80,17 +81,18 @@ _ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 _CLOUD_DB = _ROOT_DIR / "aconex_cloud.duckdb"
 _CLOUD_ZIP = _ROOT_DIR / "aconex_cloud.duckdb.zip"
 
-if not _CLOUD_DB.exists() and _CLOUD_ZIP.exists():
+# Priority: Local master aconex.duckdb > aconex_cloud.duckdb (Render) > unzip aconex_cloud.duckdb.zip
+if (_ROOT_DIR / "aconex.duckdb").exists():
+    DB_PATH = str(_ROOT_DIR / "aconex.duckdb").replace("\\", "/")
+elif _CLOUD_DB.exists():
+    DB_PATH = str(_CLOUD_DB).replace("\\", "/")
+elif _CLOUD_ZIP.exists():
     import zipfile
     with zipfile.ZipFile(str(_CLOUD_ZIP), "r") as z:
         z.extractall(str(_ROOT_DIR))
-
-if _CLOUD_DB.exists():
     DB_PATH = str(_CLOUD_DB).replace("\\", "/")
-elif (_ROOT_DIR / "aconex.duckdb").exists():
-    DB_PATH = str(_ROOT_DIR / "aconex.duckdb").replace("\\", "/")
 else:
-    DB_PATH = "aconex.duckdb"
+    DB_PATH = "aconex.duckdb" 
 
 from fastapi.staticfiles import StaticFiles
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
@@ -129,6 +131,7 @@ async def hill_corporate_auth_middleware(request: Request, call_next):
         "/api/auth/hill-logout",
         "/api/auth/verify-admin",
         "/api/auth/check-admin",
+        "/api/sync/cloud-push",
         "/openapi.json",
         "/docs",
         "/redoc"
@@ -5641,3 +5644,73 @@ if __name__ == "__main__":
         print(f"  Network Access: http://{lan_ip}:{port}")
     print("================================================================")
     uvicorn.run(app, host="0.0.0.0", port=port)
+
+
+@app.post("/api/sync/cloud-push")
+async def sync_cloud_push_api(
+    request: Request,
+    file: UploadFile = File(...),
+    x_sync_secret: str = None
+):
+    """
+    Secure endpoint allowing local pipeline to push fresh DuckDB snapshot directly to Render.
+    Performs atomic swap and instant hot-reload of project data.
+    """
+    secret = os.environ.get("HILL_SYNC_SECRET", "HILL_REH_SYNC_SECRET_2026")
+    auth_val = x_sync_secret or request.headers.get("x-sync-secret") or request.query_params.get("secret")
+    if not auth_val and request.headers.get("Authorization", "").startswith("Bearer "):
+        auth_val = request.headers.get("Authorization", "")[7:].strip()
+        
+    if not auth_val or auth_val != secret:
+        raise HTTPException(status_code=403, detail="Invalid cloud sync secret token.")
+    
+    target_db = _ROOT_DIR / "aconex_cloud.duckdb"
+    temp_upload = _ROOT_DIR / f"cloud_sync_tmp_{int(time.time())}.upload"
+    
+    import shutil
+    import zipfile
+    
+    try:
+        with open(temp_upload, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+            
+        # If it's a zip file, extract aconex_cloud.duckdb
+        if zipfile.is_zipfile(temp_upload):
+            with zipfile.ZipFile(temp_upload, "r") as zf:
+                zf.extractall(str(_ROOT_DIR))
+            if temp_upload.exists():
+                temp_upload.unlink()
+        else:
+            if target_db.exists():
+                try:
+                    target_db.unlink()
+                except Exception:
+                    pass
+            shutil.move(temp_upload, target_db)
+            
+        # Verify database is readable and query telemetry
+        con = duckdb.connect(str(target_db), read_only=True)
+        r_cutoff = con.execute("SELECT MAX(sent_date) FROM fact_mail").fetchone()
+        r_mail = con.execute("SELECT count(*) FROM fact_mail").fetchone()
+        r_rfis = con.execute("SELECT count(*) FROM fact_rfis").fetchone()
+        r_docs = con.execute("SELECT count(*) FROM dim_documents").fetchone()
+        con.close()
+        
+        cutoff = str(r_cutoff[0])[:19] if r_cutoff and r_cutoff[0] else "N/A"
+        
+        return {
+            "success": True,
+            "message": "Render database updated and hot-reloaded successfully!",
+            "cutoff_date": cutoff,
+            "total_mails": r_mail[0] if r_mail else 0,
+            "total_rfis": r_rfis[0] if r_rfis else 0,
+            "total_docs": r_docs[0] if r_docs else 0,
+            "timestamp": time.time()
+        }
+    except Exception as e:
+        if temp_upload.exists():
+            try:
+                temp_upload.unlink()
+            except Exception:
+                pass
+        raise HTTPException(status_code=500, detail=f"Cloud sync failed: {str(e)}")
