@@ -75,7 +75,22 @@ import dispatch_settings_service as dss
 import discipline_service as disc_s
 import feed_service
 
-DB_PATH = r"C:\Users\bimst\Downloads\ACONEX\aconex.duckdb".replace("\\", "/")
+from pathlib import Path
+_ROOT_DIR = Path(__file__).resolve().parent.parent.parent
+_CLOUD_DB = _ROOT_DIR / "aconex_cloud.duckdb"
+_CLOUD_ZIP = _ROOT_DIR / "aconex_cloud.duckdb.zip"
+
+if not _CLOUD_DB.exists() and _CLOUD_ZIP.exists():
+    import zipfile
+    with zipfile.ZipFile(str(_CLOUD_ZIP), "r") as z:
+        z.extractall(str(_ROOT_DIR))
+
+if _CLOUD_DB.exists():
+    DB_PATH = str(_CLOUD_DB).replace("\\", "/")
+elif (_ROOT_DIR / "aconex.duckdb").exists():
+    DB_PATH = str(_ROOT_DIR / "aconex.duckdb").replace("\\", "/")
+else:
+    DB_PATH = "aconex.duckdb"
 
 from fastapi.staticfiles import StaticFiles
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")

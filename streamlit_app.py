@@ -817,10 +817,10 @@ with tab_disciplines:
         SELECT 
             discipline_name AS "Discipline",
             count(*) AS "Total Documents",
-            count(CASE WHEN review_status ILIKE '%approved%' THEN 1 END) AS "Approved",
-            count(CASE WHEN review_status ILIKE '%rejected%' THEN 1 END) AS "Rejected",
-            count(CASE WHEN review_status ILIKE '%revise%' OR review_status ILIKE '%resubmit%' THEN 1 END) AS "Revise & Resubmit",
-            count(CASE WHEN review_status IS NULL OR review_status = '' OR review_status ILIKE '%pending%' THEN 1 END) AS "Under Review"
+            count(CASE WHEN status ILIKE '%approved%' THEN 1 END) AS "Approved",
+            count(CASE WHEN status ILIKE '%rejected%' THEN 1 END) AS "Rejected",
+            count(CASE WHEN status ILIKE '%revise%' OR status ILIKE '%resubmit%' THEN 1 END) AS "Revise & Resubmit",
+            count(CASE WHEN status IS NULL OR status = '' OR status ILIKE '%pending%' THEN 1 END) AS "Under Review"
         FROM dim_documents
         WHERE discipline_name IS NOT NULL AND discipline_name != ''
         GROUP BY discipline_name
@@ -856,7 +856,7 @@ with tab_docs:
             doc_type AS "Doc Type",
             discipline_name AS "Discipline",
             status AS "Status",
-            review_status AS "Review Status",
+            status AS "Review Status",
             revision AS "Rev",
             date_modified::VARCHAR AS "Last Modified",
             aconex_url AS "Aconex URL"
