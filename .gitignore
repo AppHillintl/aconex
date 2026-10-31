@@ -30,3 +30,13 @@ apply_full_ui_upgrade.py
 Thumbs.db
 .vscode/
 .idea/
+
+# Local DuckDB Database (>100MB blocked by GitHub)
+aconex.duckdb
+aconex_cloud.duckdb
+!aconex_cloud.duckdb.zip
+
+# Extractor local profile & secrets
+platform/extractor/.env
+platform/extractor/browser_profile/
+platform/config/admin_auth.json

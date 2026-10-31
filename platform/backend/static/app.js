@@ -1,3 +1,322 @@
+
+function onLettersPeriodPresetChange(preset) {
+    const fIn = document.getElementById('sub-letters-from-date');
+    const tIn = document.getElementById('sub-letters-to-date');
+    if (!fIn || !tIn) return;
+
+    if (preset === 'all') {
+        fIn.value = '';
+        tIn.value = '';
+        loadProjectLetters(1);
+        return;
+    }
+
+    const today = new Date();
+    const formatDate = (d) => d.toISOString().split('T')[0];
+    tIn.value = formatDate(today);
+
+    let days = 0;
+    if (preset === 'today_yesterday') days = 1;
+    else if (preset === '7d') days = 7;
+    else if (preset === '14d') days = 14;
+    else if (preset === '30d') days = 30;
+    else if (preset === '60d') days = 60;
+
+    const fromDate = new Date();
+    fromDate.setDate(today.getDate() - days);
+    fIn.value = formatDate(fromDate);
+
+    loadProjectLetters(1);
+}
+window.onLettersPeriodPresetChange = onLettersPeriodPresetChange;
+
+
+function updateContractorRfiCompanyDropdown(companies) {
+    const compSelect = document.getElementById('crfi-filter-company');
+    if (!compSelect || !companies) return;
+    const curVal = compSelect.value;
+    let html = '<option value="all">All Responsible Companies</option>';
+    companies.forEach(c => {
+        html += `<option value="${escapeHtml(c)}" ${c === curVal ? 'selected' : ''}>${escapeHtml(c)}</option>`;
+    });
+    compSelect.innerHTML = html;
+}
+window.updateContractorRfiCompanyDropdown = updateContractorRfiCompanyDropdown;
+
+
+// =========================================================================
+// ANTIGRAVITY ENTERPRISE TABLE ENGINE: MULTI-SORT & COLUMN VISIBILITY
+// =========================================================================
+const AntigravityTableEngine = (function() {
+    const sortStates = {};
+    const hiddenColumns = {};
+
+    function getTable(tableOrId) {
+        if (typeof tableOrId === 'string') return document.getElementById(tableOrId);
+        return tableOrId;
+    }
+
+    function initTable(tableId) {
+        const table = getTable(tableId);
+        if (!table) return;
+
+        // Restore hidden columns from localStorage
+        try {
+            const saved = localStorage.getItem('table_cols_' + tableId);
+            if (saved) {
+                hiddenColumns[tableId] = new Set(JSON.parse(saved));
+                applyColumnVisibility(tableId);
+            }
+        } catch(e) {}
+
+        // Bind headers for sorting
+        const ths = table.querySelectorAll('thead th');
+        ths.forEach((th, idx) => {
+            const text = th.innerText.trim().toLowerCase();
+            if (text === 'action' || text === '' || th.classList.contains('no-sort')) return;
+
+            th.classList.add('cursor-pointer', 'select-none', 'hover:bg-slate-800/80', 'transition');
+            th.title = 'Click to sort \u2022 Hold Ctrl (or Cmd) for multi-sort';
+
+            let badge = th.querySelector('.sort-badge');
+            if (!badge) {
+                badge = document.createElement('span');
+                badge.className = 'sort-badge ml-1.5 inline-block text-[10px] text-amber-400 font-bold';
+                th.appendChild(badge);
+            }
+
+            th.onclick = function(e) {
+                handleHeaderClick(tableId, idx, e);
+            };
+        });
+    }
+
+    function handleHeaderClick(tableId, colIndex, e) {
+        const table = getTable(tableId);
+        if (!table) return;
+
+        const isMulti = e.ctrlKey || e.metaKey;
+        if (!sortStates[tableId]) sortStates[tableId] = [];
+        let state = sortStates[tableId];
+
+        const existingIdx = state.findIndex(s => s.colIndex === colIndex);
+
+        if (isMulti) {
+            if (existingIdx !== -1) {
+                if (state[existingIdx].dir === 'asc') {
+                    state[existingIdx].dir = 'desc';
+                } else {
+                    state.splice(existingIdx, 1);
+                }
+            } else {
+                state.push({ colIndex, dir: 'asc' });
+            }
+        } else {
+            if (existingIdx !== -1 && state.length === 1) {
+                if (state[0].dir === 'asc') {
+                    state[0].dir = 'desc';
+                } else {
+                    state = [];
+                }
+            } else {
+                state = [{ colIndex, dir: 'asc' }];
+            }
+        }
+        sortStates[tableId] = state;
+
+        updateHeaderBadges(tableId);
+        sortTableRows(tableId);
+    }
+
+    function updateHeaderBadges(tableId) {
+        const table = getTable(tableId);
+        if (!table) return;
+        const state = sortStates[tableId] || [];
+        const ths = table.querySelectorAll('thead th');
+
+        ths.forEach((th, idx) => {
+            const badge = th.querySelector('.sort-badge');
+            if (!badge) return;
+            const sortEntry = state.find(s => s.colIndex === idx);
+            if (!sortEntry) {
+                badge.innerHTML = '';
+            } else {
+                const arrow = sortEntry.dir === 'asc' ? '▲' : '▼';
+                if (state.length > 1) {
+                    const level = state.indexOf(sortEntry) + 1;
+                    badge.innerHTML = `<span class="px-1 py-0.2 rounded bg-amber-500/20 text-amber-300 font-mono text-[9px]">${arrow} ${level}</span>`;
+                } else {
+                    badge.innerHTML = `<span class="text-amber-400 font-mono text-[10px]">${arrow}</span>`;
+                }
+            }
+        });
+    }
+
+    function sortTableRows(tableId) {
+        const table = getTable(tableId);
+        if (!table) return;
+        const tbody = table.querySelector('tbody');
+        if (!tbody) return;
+
+        const state = sortStates[tableId] || [];
+        if (state.length === 0) return;
+
+        const rows = Array.from(tbody.querySelectorAll('tr'));
+        if (rows.length <= 1) return;
+
+        rows.sort((rowA, rowB) => {
+            for (const { colIndex, dir } of state) {
+                const cellA = rowA.children[colIndex]?.innerText?.trim() || '';
+                const cellB = rowB.children[colIndex]?.innerText?.trim() || '';
+
+                const comp = compareValues(cellA, cellB);
+                if (comp !== 0) {
+                    return dir === 'asc' ? comp : -comp;
+                }
+            }
+            return 0;
+        });
+
+        rows.forEach(r => tbody.appendChild(r));
+    }
+
+    function compareValues(a, b) {
+        if (!a && !b) return 0;
+        if (!a) return 1;
+        if (!b) return -1;
+
+        const cleanA = a.replace(/[^\d.-]/g, '');
+        const cleanB = b.replace(/[^\d.-]/g, '');
+        const numA = parseFloat(cleanA);
+        const numB = parseFloat(cleanB);
+        if (!isNaN(numA) && !isNaN(numB) && cleanA.length > 0 && cleanB.length > 0 && (!a.includes('-') || a.match(/\d{4}-\d{2}-\d{2}/))) {
+            if (a.match(/\d{4}-\d{2}-\d{2}/) && b.match(/\d{4}-\d{2}-\d{2}/)) {
+                return a.localeCompare(b);
+            }
+            if (!isNaN(numA) && !isNaN(numB) && a.match(/^[\d,.]+(\s*d)?$/i)) {
+                return numA - numB;
+            }
+        }
+
+        return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+    }
+
+    function toggleColumnPicker(tableId, e) {
+        if (e) e.stopPropagation();
+        let picker = document.getElementById('col-picker-' + tableId);
+        if (picker) {
+            picker.remove();
+            return;
+        }
+
+        document.querySelectorAll('.col-picker-dropdown').forEach(p => p.remove());
+
+        const table = getTable(tableId);
+        if (!table) return;
+
+        const ths = Array.from(table.querySelectorAll('thead th'));
+        if (ths.length === 0) return;
+
+        picker = document.createElement('div');
+        picker.id = 'col-picker-' + tableId;
+        picker.className = 'col-picker-dropdown absolute z-50 mt-1 right-0 w-64 bg-slate-900 border border-slate-700/80 rounded-xl shadow-2xl p-3 text-xs text-slate-200 animate-in fade-in duration-150';
+        picker.onclick = (ev) => ev.stopPropagation();
+
+        let html = `
+            <div class="flex items-center justify-between pb-2 mb-2 border-b border-slate-800">
+                <span class="font-bold text-white flex items-center gap-1.5"><i data-lucide="sliders" class="w-3.5 h-3.5 text-amber-400"></i> Configure Columns</span>
+                <button type="button" onclick="AntigravityTableEngine.resetColumns('${tableId}')" class="text-[10px] text-amber-400 hover:text-amber-300 font-semibold cursor-pointer">Reset All</button>
+            </div>
+            <div class="space-y-1.5 max-h-60 overflow-y-auto pr-1">
+        `;
+
+        if (!hiddenColumns[tableId]) hiddenColumns[tableId] = new Set();
+        const hidden = hiddenColumns[tableId];
+
+        ths.forEach((th, idx) => {
+            const label = th.innerText.replace(/[\n▲▼0-9]/g, '').trim();
+            if (!label || label.toLowerCase() === 'action') return;
+            const isChecked = !hidden.has(idx);
+
+            html += `
+                <label class="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-slate-800/60 cursor-pointer transition">
+                    <input type="checkbox" ${isChecked ? 'checked' : ''} onchange="AntigravityTableEngine.setColumnVisible('${tableId}', ${idx}, this.checked)" class="rounded border-slate-700 text-amber-500 focus:ring-0 cursor-pointer">
+                    <span class="truncate">${escapeHtml(label)}</span>
+                </label>
+            `;
+        });
+
+        html += `</div>`;
+        picker.innerHTML = html;
+
+        const btn = e.currentTarget || e.target;
+        const parent = btn.parentElement;
+        if (parent) {
+            parent.style.position = 'relative';
+            parent.appendChild(picker);
+        }
+
+        const closeHandler = function() {
+            picker.remove();
+            document.removeEventListener('click', closeHandler);
+        };
+        setTimeout(() => document.addEventListener('click', closeHandler), 50);
+        if (window.lucide) lucide.createIcons();
+    }
+
+    function setColumnVisible(tableId, colIndex, isVisible) {
+        if (!hiddenColumns[tableId]) hiddenColumns[tableId] = new Set();
+        if (isVisible) {
+            hiddenColumns[tableId].delete(colIndex);
+        } else {
+            hiddenColumns[tableId].add(colIndex);
+        }
+        applyColumnVisibility(tableId);
+        try {
+            localStorage.setItem('table_cols_' + tableId, JSON.stringify(Array.from(hiddenColumns[tableId])));
+        } catch(e) {}
+    }
+
+    function resetColumns(tableId) {
+        hiddenColumns[tableId] = new Set();
+        applyColumnVisibility(tableId);
+        try {
+            localStorage.removeItem('table_cols_' + tableId);
+        } catch(e) {}
+        const picker = document.getElementById('col-picker-' + tableId);
+        if (picker) {
+            picker.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = true);
+        }
+    }
+
+    function applyColumnVisibility(tableId) {
+        const table = getTable(tableId);
+        if (!table) return;
+        const hidden = hiddenColumns[tableId] || new Set();
+
+        const allRows = table.querySelectorAll('tr');
+        allRows.forEach(row => {
+            Array.from(row.children).forEach((cell, idx) => {
+                if (hidden.has(idx)) {
+                    cell.style.display = 'none';
+                } else {
+                    cell.style.display = '';
+                }
+            });
+        });
+    }
+
+    return {
+        initTable,
+        handleHeaderClick,
+        toggleColumnPicker,
+        setColumnVisible,
+        resetColumns,
+        applyColumnVisibility
+    };
+})();
+window.AntigravityTableEngine = AntigravityTableEngine;
+
 // Ras El Hekma Projects Hub & Controls Platform Engine
 // Global State
 let allProjects = [];
@@ -54,8 +373,8 @@ const totalCounts = {
 
 // Controls Tab State
 let ctrlProjectsList = [];
-let ctrlCategoryFilter = 'Wadi Yemm';
-let ctrlSelectedCategory = 'Wadi Yemm';
+let ctrlCategoryFilter = 'all';
+let ctrlSelectedCategory = 'all';
 let ctrlProjectSearchTerm = '';
 let ctrlSelectedProjectId = null;
 let ctrlActiveReport = null;
@@ -102,41 +421,81 @@ function formatAppDate(dateStr) {
 
 // ==========================================
 // ORACLE ACONEX OFFICIAL LINK RESOLVERS
+// Hyperlinks ALWAYS use direct IDs:
+//   - Mails / RFIs: /MiniURL?type=MAILSEARCH&...&cid={id}
+//   - Documents: /ViewDoc?trackingid={id}&...
 // ==========================================
 function getAconexMailUrl(item) {
-    if (item && item.aconex_url) return item.aconex_url;
+    const direct = String(item?.aconex_url || '');
+    if (direct.includes('/MiniURL?') || direct.includes('/ViewDoc?')) return direct;
     const cid = item?.correspondence_id || item?.mail_id;
     if (cid && !isNaN(Number(cid))) {
         return `https://mea.aconex.com/MiniURL?type=MAILSEARCH&mailbox=5&pid=1744833878&cid=${cid}`;
     }
-    const mailNo = item?.mail_no || item?.rfi_no || '';
+    const mailNo = String(item?.mail_no || item?.rfi_no || item?.item_no || '').replace(/^["']+|["']+$/g, '').trim();
     if (mailNo) {
-        return `https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A${encodeURIComponent(mailNo)}`;
+        return `/api/aconex/mail?mail_no=${encodeURIComponent(mailNo)}`;
     }
+    if (direct.startsWith('http') && !direct.includes('docno:')) return direct;
     return `https://mea.aconex.com`;
 }
 
 function getAconexDocUrl(item) {
-    if (item && item.aconex_url) return item.aconex_url;
-    const trackingId = item?.tracking_id || item?.document_id;
-    if (trackingId && !isNaN(Number(trackingId))) {
-        return `https://mea.aconex.com/ViewDoc?trackingid=${trackingId}&projectid=1744833878&cversion=1&tab=0`;
-    }
-    const docNo = item?.document_no || '';
-    if (docNo) {
-        return `https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=DOC-SUPERSEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=documentNumber%3A${encodeURIComponent(docNo)}`;
-    }
+    const direct = String(item?.aconex_url || item?.aconex_doc_url || '');
+    if (direct.includes('/MiniURL?')) return direct;
+    const rawDocNo = String(item?.document_no || item?.doc_no || item?.item_no || '').replace(/^["']+|["']+$/g, '').trim();
+    if (rawDocNo) return `/api/aconex/doc?doc_no=${encodeURIComponent(rawDocNo)}`;
+    if (direct.startsWith('http') && !direct.includes('docno:') && !direct.includes('trackingid=')) return direct;
     return `https://mea.aconex.com`;
 }
 
 function getAconexWorkflowUrl(item) {
-    if (item && item.aconex_url) return item.aconex_url;
-    const wfNo = item?.workflow_no || '';
+    const direct = String(item?.aconex_url || '');
+    if (direct.includes('/ViewDoc?') || direct.includes('/MiniURL?')) return direct;
+    const rawDocNo = String(item?.document_no || '').replace(/^["']+|["']+$/g, '').trim();
+    if (rawDocNo) return `/api/aconex/doc?doc_no=${encodeURIComponent(rawDocNo)}`;
+    const wfNo = String(item?.workflow_no || '').trim();
     if (wfNo) {
         return `https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=WORKFLOW-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=workflowNumber%3A${encodeURIComponent(wfNo)}`;
     }
     return `https://mea.aconex.com`;
 }
+
+// Global safety net: any legacy search link containing searchQuery or docno rendered anywhere in the app
+// (discipline portals, daily feed, transmittals, timelines) is rewritten on click
+// to the direct ViewDoc / MiniURL hyperlink with ID via the backend resolver.
+document.addEventListener('click', function (ev) {
+    const a = ev.target && ev.target.closest ? ev.target.closest('a[href]') : null;
+    if (!a) return;
+    const href = a.getAttribute('href') || '';
+    if (!/mea\.aconex\.com/i.test(href)) return;
+
+    // Direct ViewDoc or MiniURL links with IDs are already 100% authoritative!
+    if (href.includes('/ViewDoc?') || href.includes('/MiniURL?')) return;
+
+    const m = href.match(/searchQuery=([^&]+)/i);
+    if (!m) return;
+    let q = '';
+    try { q = decodeURIComponent(m[1].replace(/\+/g, ' ')); } catch (e) { q = m[1]; }
+
+    // Check if it's a doc query
+    const dm = q.match(/(?:docno|documentNo|documentNumber)\s*:\s*"?([^"&]+)"?/i);
+    if (dm && dm[1]) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        window.open(`/api/aconex/doc?doc_no=${encodeURIComponent(dm[1].trim())}`, '_blank', 'noopener');
+        return;
+    }
+
+    // Check if it's a mail/rfi query
+    const mm = q.match(/(?:mailNumber|mail_no|mailNo|id)\s*:\s*"?([^"&]+)"?/i);
+    if (mm && mm[1]) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        window.open(`/api/aconex/mail?mail_no=${encodeURIComponent(mm[1].trim())}`, '_blank', 'noopener');
+        return;
+    }
+}, true);
 
 // Hill & SSC Direct Letters State
 let hsdCurrentDirection = 'all';
@@ -153,36 +512,55 @@ function toggleSidebar() {
     const sidebar = document.getElementById('main-sidebar');
     const content = document.getElementById('main-content-wrapper');
     const toggleIcon = document.getElementById('sidebar-toggle-icon');
+    const toggleBtn = document.getElementById('sidebar-toggle-btn');
 
     if (isSidebarCollapsed) {
-        if (sidebar) {
-            sidebar.classList.add('-translate-x-full');
-            sidebar.classList.remove('w-72');
-            sidebar.classList.add('w-0', 'overflow-hidden');
-        }
+        if (sidebar) sidebar.classList.add('-translate-x-full');
         if (content) {
             content.classList.remove('ml-72');
             content.classList.add('ml-0');
         }
-        if (toggleIcon) toggleIcon.setAttribute('data-lucide', 'panel-left-open');
-    } else {
-        if (sidebar) {
-            sidebar.classList.remove('-translate-x-full', 'w-0', 'overflow-hidden');
-            sidebar.classList.add('w-72');
+        if (toggleBtn) {
+            toggleBtn.style.left = '0px';
+            toggleBtn.style.transform = 'translate(0, -50%)';
+            toggleBtn.setAttribute('title', 'Expand Sidebar');
         }
+        if (toggleIcon) toggleIcon.setAttribute('data-lucide', 'chevron-right');
+    } else {
+        if (sidebar) sidebar.classList.remove('-translate-x-full');
         if (content) {
             content.classList.remove('ml-0');
             content.classList.add('ml-72');
         }
-        if (toggleIcon) toggleIcon.setAttribute('data-lucide', 'panel-left-close');
+        if (toggleBtn) {
+            toggleBtn.style.left = '18rem'; // 288px (w-72)
+            toggleBtn.style.transform = 'translate(-50%, -50%)';
+            toggleBtn.setAttribute('title', 'Collapse Sidebar');
+        }
+        if (toggleIcon) toggleIcon.setAttribute('data-lucide', 'chevron-left');
     }
     if (window.lucide) lucide.createIcons();
 }
+window.toggleSidebar = toggleSidebar;
+window.switchPrimaryTab = switchPrimaryTab;
 
 // Initial Load
 document.addEventListener('DOMContentLoaded', () => {
     if (window.lucide) lucide.createIcons();
     loadAllProjects();
+    fetch('/api/database/cutoff')
+        .then(r => r.json())
+        .then(data => {
+            if (data && data.formatted) {
+                const el = document.getElementById('header-data-cutoff');
+                if (el) el.innerText = data.formatted;
+            }
+            if (data && data.last_sync_formatted) {
+                const elSync = document.getElementById('header-last-sync');
+                if (elSync) elSync.innerText = data.last_sync_formatted;
+            }
+        })
+        .catch(() => {});
     updateLegendStrip();
     // Pre-populate Hill Internal Actions badge in background
     fetch('/api/controls/hill_team')
@@ -192,6 +570,16 @@ document.addEventListener('DOMContentLoaded', () => {
             let total = 0;
             list.forEach(e => total += (e.overdue_steps || 0) + (e.overdue_mails || 0));
             const sideBadge = document.getElementById('badge-hill-internal-count');
+            // Pre-populate Daily Deliverables Feed badge in background
+            fetch('/api/feed/summary?timeframe=today_yesterday')
+                .then(r => r.json())
+                .then(res => {
+                    const badge = document.getElementById('badge-daily-feed-count');
+                    if (badge && res.total_items !== undefined) {
+                        badge.innerText = `${res.total_items.toLocaleString()} New`;
+                    }
+                })
+                .catch(() => {});
             if (sideBadge) sideBadge.innerText = `${total.toLocaleString()} Overdue`;
         })
         .catch(() => {});
@@ -221,6 +609,7 @@ async function loadAllProjects() {
         const res = await fetch('/api/projects');
         const json = await res.json();
         allProjects = json.data || [];
+        window.allProjects = allProjects;
 
         updateHeaderAndPillCounters();
         filterAndRenderProjects();
@@ -260,7 +649,7 @@ async function initMasterPlanMap() {
 
     if (!masterPlanLoaded) {
         try {
-            const res = await fetch('/static/images/master_plan_interactive.svg');
+            const res = await fetch(`/static/images/master_plan_interactive.svg?v=${Date.now()}`);
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const svgContent = await res.text();
             container.innerHTML = svgContent;
@@ -299,7 +688,7 @@ function attachMasterPlanInteractivity(container, viewport, tooltip) {
         // Click to Open Workspace immediately
         el.addEventListener('click', (e) => {
             e.stopPropagation();
-            const pid = el.getAttribute('data-project-id');
+            const pid = resolveMapProjectId(el);
             if (pid) {
                 openProjectWorkspace(pid);
             }
@@ -307,14 +696,58 @@ function attachMasterPlanInteractivity(container, viewport, tooltip) {
     });
 }
 
+function resolveMapProjectId(el) {
+    let pid = el.getAttribute('data-project-id') || '';
+    const aid = el.getAttribute('data-area-id') || el.id || '';
+    
+    const areaMap = {
+        'Dp01': 'DP01',
+        'DP01': 'DP01',
+        'Dp02': 'DP02',
+        'DP02': 'DP02',
+        'Dp03-East': 'DP03-East',
+        'Dp03_x20_East': 'DP03-East',
+        'Dp03-E': 'DP03-East',
+        'Dp03_x20_West': 'DP03-West',
+        'Dp03-West': 'DP03-West',
+        'Dp03-W': 'DP03-West',
+        'Dp04': 'DP04',
+        'DP04': 'DP04',
+        'Dp05': 'DP05',
+        'DP05': 'DP05',
+        'Dpo6': 'DP06',
+        'DP06': 'DP06',
+        'Dp07': 'DP07',
+        'DP07': 'DP07',
+        'Dp08': 'DP08 - South Golf',
+        'DP08': 'DP08 - South Golf',
+        'Grand_x20_Canal': 'Grand Canal',
+        'Grand Canal': 'Grand Canal',
+        'West_x20_canal': 'West Canal',
+        'West Canal': 'West Canal',
+        'Ring_x20_Road': 'Infra',
+        'Ring Road': 'Infra',
+        'Infra': 'Infra',
+        'MSS': 'MMS / Substation',
+        'MMS': 'MMS / Substation',
+        'MMS / Substation': 'MMS / Substation',
+        'RO': 'RO Plant',
+        'RO Plant': 'RO Plant',
+        'STP': 'STP',
+        'Airport': 'Airport'
+    };
+
+    if (areaMap[pid]) return areaMap[pid];
+    if (areaMap[aid]) return areaMap[aid];
+    return pid || aid;
+}
+window.resolveMapProjectId = resolveMapProjectId;
+
 function handleMasterPlanHover(e, el, viewport, tooltip) {
-    const aid = el.getAttribute('data-area-id') || el.id;
-    const pid = el.getAttribute('data-project-id') || aid;
-    const code = el.getAttribute('data-code') || aid;
-    const title = el.getAttribute('data-title') || aid;
-    const cno = el.getAttribute('data-contract') || '';
-    const ctor = el.getAttribute('data-contractor') || 'Pending';
-    const cat = el.getAttribute('data-category') || 'Wadi Yemm';
+    const aid = el.getAttribute('data-area-id') || el.id || '';
+    const pid = resolveMapProjectId(el);
+    const code = el.getAttribute('data-code') || pid || aid;
+    const cat = el.getAttribute('data-category') || (pid.startsWith('DP') ? 'Wadi Yemm' : 'Infrastructure & Strategic Projects');
 
     // Synchronize hover state between polygon path and callout badge
     document.querySelectorAll(`[data-area-id="${aid}"]`).forEach(node => {
@@ -323,6 +756,9 @@ function handleMasterPlanHover(e, el, viewport, tooltip) {
 
     // Lookup real-time metrics from allProjects
     const pData = allProjects.find(p => p.project_id === pid || p.project_name === pid) || {};
+    const title = pData.project_title || el.getAttribute('data-title') || pid;
+    const cno = pData.contract_no || el.getAttribute('data-contract') || '';
+    const ctor = pData.contractor_name || el.getAttribute('data-contractor') || 'PMC / Consultant';
     const docsCount = pData.total_documents != null ? pData.total_documents.toLocaleString() : '-';
     const lettersCount = pData.total_letters != null ? pData.total_letters.toLocaleString() : (pData.total_mails != null ? pData.total_mails.toLocaleString() : '-');
     const rfisCount = pData.total_rfis != null ? pData.total_rfis.toLocaleString() : '-';
@@ -514,12 +950,40 @@ function setProjectsViewMode(mode) {
 }
 window.setProjectsViewMode = setProjectsViewMode;
 
+function onProjectsSearchInput(val) {
+    const clearBtn = document.getElementById('projects-search-clear');
+    if (clearBtn) {
+        if (val && val.trim().length > 0) {
+            clearBtn.classList.remove('hidden');
+        } else {
+            clearBtn.classList.add('hidden');
+        }
+    }
+    filterAndRenderProjects();
+}
+window.onProjectsSearchInput = onProjectsSearchInput;
+
+function clearProjectsSearch() {
+    const input = document.getElementById('projects-search-input');
+    if (input) input.value = '';
+    const clearBtn = document.getElementById('projects-search-clear');
+    if (clearBtn) clearBtn.classList.add('hidden');
+    filterAndRenderProjects();
+}
+window.clearProjectsSearch = clearProjectsSearch;
+
 function filterAndRenderProjects() {
     const container = document.getElementById('projects-grid');
     const tableBody = document.getElementById('projects-table-tbody');
     if (!container) return;
 
-    const q = (document.getElementById('projects-search-input')?.value || '').trim().toLowerCase();
+    const searchInput = document.getElementById('projects-search-input');
+    const q = (searchInput?.value || '').trim().toLowerCase();
+    const clearBtn = document.getElementById('projects-search-clear');
+    if (clearBtn) {
+        if (q.length > 0) clearBtn.classList.remove('hidden');
+        else clearBtn.classList.add('hidden');
+    }
 
     const filtered = allProjects.filter(p => {
         if (selectedCategory !== 'all' && p.category !== selectedCategory) return false;
@@ -532,13 +996,20 @@ function filterAndRenderProjects() {
 
     if (filtered.length === 0) {
         container.innerHTML = `
-            <div class="col-span-full py-16 text-center text-slate-500 bg-slate-900/40 rounded-2xl border border-slate-800">
-                <i data-lucide="layers" class="w-12 h-12 mx-auto text-slate-600 mb-3"></i>
-                <p class="text-sm font-bold text-slate-400">No packages match the selected criteria</p>
+            <div class="col-span-full py-16 text-center text-slate-500 bg-slate-900/40 rounded-2xl border border-slate-800 p-8 flex flex-col items-center justify-center">
+                <i data-lucide="layers" class="w-12 h-12 text-slate-600 mb-3"></i>
+                <p class="text-sm font-bold text-slate-300 mb-1">No packages match the selected criteria</p>
+                ${q ? `<p class="text-xs text-slate-500 mb-4 max-w-md font-mono bg-slate-950 px-3 py-1 rounded border border-slate-800">Search: "${escapeHtml(q)}"</p>` : ''}
+                <button type="button" onclick="clearProjectsSearch(); setCategory('all');" class="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-xl text-xs font-bold transition flex items-center gap-2 cursor-pointer shadow-lg shadow-sky-600/20">
+                    <i data-lucide="rotate-ccw" class="w-3.5 h-3.5"></i>
+                    <span>Clear Search & Show All Packages</span>
+                </button>
             </div>
         `;
         if (tableBody) {
-            tableBody.innerHTML = `<tr><td colspan="9" class="p-8 text-center text-slate-500">No packages match the selected criteria</td></tr>`;
+            tableBody.innerHTML = `<tr><td colspan="9" class="p-8 text-center text-slate-500">
+                <div>No packages match criteria. <button onclick="clearProjectsSearch(); setCategory('all');" class="text-sky-400 underline font-bold ml-2">Reset</button></div>
+            </td></tr>`;
         }
         if (window.lucide) lucide.createIcons();
         return;
@@ -662,13 +1133,29 @@ function filterAndRenderProjects() {
 // 2. PROJECT 360 WORKSPACE
 // ==========================================
 async function openProjectWorkspace(projectId) {
+    if (!projectId) return;
+    if (projectId === 'Ring Road' || projectId === 'Ring_x20_Road') {
+        projectId = 'Infra';
+    }
+    if (projectId === 'MMS' || projectId === 'MSS' || projectId === 'MMS-Substation') {
+        projectId = 'MMS / Substation';
+    }
+    if (projectId === 'RO') projectId = 'RO Plant';
+    if (projectId === 'DP08') projectId = 'DP08 - South Golf';
     document.getElementById('view-projects-hub').classList.add('hidden');
     document.getElementById('view-project-workspace').classList.remove('hidden');
     window.scrollTo({ top: 0, behavior: 'smooth' });
 
     try {
         const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}`);
+        if (!res.ok) {
+            const errText = await res.text();
+            throw new Error(`HTTP ${res.status}: ${errText || res.statusText}`);
+        }
         const data = await res.json();
+        if (data.info && (data.info.project_id === 'MMS / Substation' || data.info.project_id === 'MMS')) {
+            data.info.project_id = 'MMS';
+        }
         activeProjectData = data;
 
         const info = data.info || {};
@@ -707,6 +1194,22 @@ async function openProjectWorkspace(projectId) {
         if (rfiTitle) {
             rfiTitle.textContent = isDp01 ? 'Site Clarifications (SCR)' : 'RFIs';
         }
+        const kpiTitle = document.getElementById('proj-kpi-rfi-title');
+        if (kpiTitle) {
+            kpiTitle.textContent = isDp01 ? 'Site Clarifications (SCR)' : 'RFIs';
+        }
+        const kpiDesc = document.getElementById('proj-kpi-rfi-desc');
+        if (kpiDesc) {
+            kpiDesc.textContent = isDp01 ? 'Site Clarifications (0 RFIs)' : 'Technical Queries';
+        }
+        const rfiSearchInput = document.getElementById('sub-rfis-search');
+        if (rfiSearchInput) {
+            rfiSearchInput.placeholder = isDp01 ? 'Search SCR subject, reference, or number...' : 'Search RFI subject or number...';
+        }
+        const rfiColNum = document.getElementById('sub-rfis-col-num');
+        if (rfiColNum) {
+            rfiColNum.innerText = isDp01 ? 'SCR No' : 'RFI No';
+        }
 
         setTxt('proj-kpi-shopdrw', kpis.total_shop_drawings);
         setTxt('subtab-count-shop_drawings', kpis.total_shop_drawings);
@@ -737,7 +1240,10 @@ async function openProjectWorkspace(projectId) {
         if (rfiFromSelect) {
             rfiFromSelect.innerHTML = '<option value="">From: All Orgs</option>';
             (data.rfi_from_orgs || []).forEach(org => {
-                rfiFromSelect.innerHTML += `<option value="${org}">${org}</option>`;
+                if (org && typeof org === 'string' && org.trim()) {
+                    const cleanOrg = org.trim();
+                    rfiFromSelect.innerHTML += `<option value="${escapeHtml(cleanOrg)}" title="${escapeHtml(cleanOrg)}">${escapeHtml(cleanOrg)}</option>`;
+                }
             });
         }
 
@@ -745,7 +1251,10 @@ async function openProjectWorkspace(projectId) {
         if (rfiToSelect) {
             rfiToSelect.innerHTML = '<option value="">To: All Orgs</option>';
             (data.rfi_to_orgs || []).forEach(org => {
-                rfiToSelect.innerHTML += `<option value="${org}">${org}</option>`;
+                if (org && typeof org === 'string' && org.trim()) {
+                    const cleanOrg = org.trim();
+                    rfiToSelect.innerHTML += `<option value="${escapeHtml(cleanOrg)}" title="${escapeHtml(cleanOrg)}">${escapeHtml(cleanOrg)}</option>`;
+                }
             });
         }
 
@@ -760,32 +1269,32 @@ async function openProjectWorkspace(projectId) {
             }
         });
 
-        // Populate Status Dropdowns
+        // Populate Status Dropdowns (Clean names without misleading project-wide static counts)
         ['shopdrw', 'mat', 'otherdocs'].forEach(prefix => {
             const el = document.getElementById(`sub-${prefix}-status`);
             if (el) {
-                el.innerHTML = '<option value="">All Statuses</option>';
+                el.innerHTML = '<option value="">All Status</option>';
                 (data.doc_statuses || []).forEach(s => {
-                    el.innerHTML += `<option value="${s.name}">${s.name} (${s.count.toLocaleString()})</option>`;
+                    el.innerHTML += `<option value="${s.name}">${s.name}</option>`;
                 });
             }
         });
 
-        // Populate Other Mail Types
+        // Populate Other Mail Types (Clean names without static counts)
         const otherMailSelect = document.getElementById('sub-othermail-type');
         if (otherMailSelect) {
             otherMailSelect.innerHTML = '<option value="">All Other Mail Types</option>';
             (data.other_mail_types || []).forEach(m => {
-                otherMailSelect.innerHTML += `<option value="${m.name}">${m.name} (${m.count.toLocaleString()})</option>`;
+                otherMailSelect.innerHTML += `<option value="${m.name}">${m.name}</option>`;
             });
         }
 
-        // Populate Other Doc Types
+        // Populate Other Doc Types (Clean names without static counts)
         const otherDocsSelect = document.getElementById('sub-otherdocs-type');
         if (otherDocsSelect) {
             otherDocsSelect.innerHTML = '<option value="">All Other Doc Types</option>';
             (data.other_doc_types || []).forEach(t => {
-                otherDocsSelect.innerHTML += `<option value="${t.name}">${t.name} (${t.count.toLocaleString()})</option>`;
+                otherDocsSelect.innerHTML += `<option value="${t.name}">${t.name}</option>`;
             });
         }
 
@@ -843,7 +1352,8 @@ function setProjectSubTab(tab) {
 async function loadProjectLetters(page = 1) {
     if (!activeProjectData) return;
     pageStates.letters = page;
-    const pid = activeProjectData.info.project_id;
+    let pid = activeProjectData.info?.project_id || '';
+    if (pid === 'MMS / Substation') pid = 'MMS';
     const search = document.getElementById('sub-letters-search')?.value || '';
     const direction = document.getElementById('sub-letters-direction')?.value || '';
     const fromOrg = document.getElementById('sub-letters-from-org')?.value || '';
@@ -855,19 +1365,30 @@ async function loadProjectLetters(page = 1) {
 
     try {
         const offset = (page - 1) * limit;
+        const fromDateVal = document.getElementById('sub-letters-from-date')?.value || '';
+        const toDateVal = document.getElementById('sub-letters-to-date')?.value || '';
+
         let url = `/api/projects/${encodeURIComponent(pid)}/correspondence?category=letters&limit=${limit}&offset=${offset}${buildSortQueryString('letters')}`;
         if (search) url += `&search=${encodeURIComponent(search)}`;
         if (direction) url += `&direction=${encodeURIComponent(direction)}`;
         if (fromOrg) url += `&from_org=${encodeURIComponent(fromOrg)}`;
         if (overdue) url += `&is_overdue=true`;
+        if (fromDateVal) url += `&from_date=${encodeURIComponent(fromDateVal)}`;
+        if (toDateVal) url += `&to_date=${encodeURIComponent(toDateVal)}`;
 
         const res = await fetch(url);
+        if (!res.ok) {
+            const errJson = await res.json().catch(() => ({}));
+            throw new Error(errJson.detail || `Server returned HTTP ${res.status}`);
+        }
         const data = await res.json();
-        totalCounts.letters = data.total;
+        const records = Array.isArray(data.data) ? data.data : (Array.isArray(data) ? data : []);
+        const total = typeof data.total === 'number' ? data.total : records.length;
+        totalCounts.letters = total;
 
-        updatePaginationUI('letters', page, limit, data.total, data.data.length);
+        updatePaginationUI('letters', page, limit, total, records.length);
 
-        if (data.data.length === 0) {
+        if (records.length === 0) {
             tbody.innerHTML = '<tr><td colspan="8" class="text-center py-8 text-slate-500">No letters match filters</td></tr>';
             return;
         }
@@ -876,7 +1397,7 @@ async function loadProjectLetters(page = 1) {
         const textCls = wrap ? 'whitespace-normal break-words leading-relaxed' : 'truncate';
 
         let html = '';
-        data.data.forEach(m => {
+        records.forEach(m => {
             const aconexUrl = getAconexMailUrl(m);
             const overdueBadge = m.is_overdue ? `<span class="text-rose-400 font-bold font-mono text-[10px] whitespace-nowrap">${m.days_late}d late</span>` : `<span class="text-slate-500 font-mono text-[10px]">0d</span>`;
             const tintClass = getRowTintClass('letters', m);
@@ -914,7 +1435,8 @@ async function loadProjectLetters(page = 1) {
 async function loadProjectHillSsc(page = 1) {
     if (!activeProjectData) return;
     pageStates.hill_ssc = page;
-    const pid = activeProjectData.info.project_id;
+    let pid = activeProjectData.info?.project_id || '';
+    if (pid === 'MMS / Substation') pid = 'MMS';
     const search = document.getElementById('sub-hill_ssc-search')?.value || '';
     const direction = document.getElementById('sub-hill_ssc-direction')?.value || '';
     const overdue = document.getElementById('sub-hill_ssc-overdue')?.checked;
@@ -931,12 +1453,18 @@ async function loadProjectHillSsc(page = 1) {
         if (overdue) url += `&is_overdue=true`;
 
         const res = await fetch(url);
+        if (!res.ok) {
+            const errJson = await res.json().catch(() => ({}));
+            throw new Error(errJson.detail || `Server returned HTTP ${res.status}`);
+        }
         const data = await res.json();
-        totalCounts.hill_ssc = data.total;
+        const records = Array.isArray(data.data) ? data.data : (Array.isArray(data) ? data : []);
+        const total = typeof data.total === 'number' ? data.total : records.length;
+        totalCounts.hill_ssc = total;
 
-        updatePaginationUI('hill_ssc', page, limit, data.total, data.data.length);
+        updatePaginationUI('hill_ssc', page, limit, total, records.length);
 
-        if (data.data.length === 0) {
+        if (records.length === 0) {
             tbody.innerHTML = '<tr><td colspan="7" class="text-center py-8 text-slate-500">No Hill &amp; SSC letters match filters</td></tr>';
             return;
         }
@@ -945,7 +1473,7 @@ async function loadProjectHillSsc(page = 1) {
         const textCls = wrap ? 'whitespace-normal break-words leading-relaxed' : 'truncate';
 
         let html = '';
-        data.data.forEach(m => {
+        records.forEach(m => {
             const aconexUrl = getAconexMailUrl(m);
             const isOut = (m.direction || '').includes('Outbound');
             const dirBadge = isOut 
@@ -1006,7 +1534,8 @@ function getRfiStatusBadge(status, isOverdue) {
 async function loadProjectRFIs(page = 1) {
     if (!activeProjectData) return;
     pageStates.rfis = page;
-    const pid = activeProjectData.info.project_id;
+    let pid = activeProjectData.info?.project_id || '';
+    if (pid === 'MMS / Substation') pid = 'MMS';
     const search = document.getElementById('sub-rfis-search')?.value || '';
     const status = document.getElementById('sub-rfis-status')?.value || '';
     const type = document.getElementById('sub-rfis-type')?.value || '';
@@ -1029,8 +1558,14 @@ async function loadProjectRFIs(page = 1) {
         if (overdue) url += `&is_overdue=true`;
 
         const res = await fetch(url);
+        if (!res.ok) {
+            const errJson = await res.json().catch(() => ({}));
+            throw new Error(errJson.detail || `Server returned HTTP ${res.status}`);
+        }
         const data = await res.json();
-        totalCounts.rfis = data.total;
+        const records = Array.isArray(data.data) ? data.data : (Array.isArray(data) ? data : []);
+        const total = typeof data.total === 'number' ? data.total : records.length;
+        totalCounts.rfis = total;
 
         // DP01 Tab header and label customization
         const rfiTitle = document.getElementById('subtab-title-rfis');
@@ -1038,9 +1573,9 @@ async function loadProjectRFIs(page = 1) {
             rfiTitle.textContent = data.is_dp01_clarifications ? 'Site Clarifications (SCR)' : 'RFIs';
         }
 
-        updatePaginationUI('rfis', page, limit, data.total, data.data.length);
+        updatePaginationUI('rfis', page, limit, total, records.length);
 
-        if (data.data.length === 0) {
+        if (records.length === 0) {
             tbody.innerHTML = '<tr><td colspan="9" class="text-center py-8 text-slate-500">No items match filters</td></tr>';
             return;
         }
@@ -1049,7 +1584,7 @@ async function loadProjectRFIs(page = 1) {
         const textCls = wrap ? 'whitespace-normal break-words leading-relaxed' : 'truncate';
 
         let html = '';
-        data.data.forEach(r => {
+        records.forEach(r => {
             const aconexUrl = getAconexMailUrl(r);
             const statusBadge = getRfiStatusBadge(r.status, r.is_overdue);
             const overdueBadge = r.is_overdue ? `<span class="text-rose-400 font-bold font-mono text-[10px]">${r.days_late}d late</span>` : `<span class="text-slate-500 font-mono text-[10px]">0d</span>`;
@@ -1089,7 +1624,8 @@ async function loadProjectRFIs(page = 1) {
 async function loadProjectShopDrawings(page = 1) {
     if (!activeProjectData) return;
     pageStates.shop_drawings = page;
-    const pid = activeProjectData.info.project_id;
+    let pid = activeProjectData.info?.project_id || '';
+    if (pid === 'MMS / Substation') pid = 'MMS';
     const search = document.getElementById('sub-shopdrw-search')?.value || '';
     const disc = document.getElementById('sub-shopdrw-discipline')?.value || '';
     const status = document.getElementById('sub-shopdrw-status')?.value || '';
@@ -1106,12 +1642,18 @@ async function loadProjectShopDrawings(page = 1) {
         if (status) url += `&status=${encodeURIComponent(status)}`;
 
         const res = await fetch(url);
+        if (!res.ok) {
+            const errJson = await res.json().catch(() => ({}));
+            throw new Error(errJson.detail || `Server returned HTTP ${res.status}`);
+        }
         const data = await res.json();
-        totalCounts.shop_drawings = data.total;
+        const records = Array.isArray(data.data) ? data.data : (Array.isArray(data) ? data : []);
+        const total = typeof data.total === 'number' ? data.total : records.length;
+        totalCounts.shop_drawings = total;
 
-        updatePaginationUI('shop_drawings', page, limit, data.total, data.data.length);
+        updatePaginationUI('shop_drawings', page, limit, total, records.length);
 
-        if (data.data.length === 0) {
+        if (records.length === 0) {
             tbody.innerHTML = '<tr><td colspan="6" class="text-center py-8 text-slate-500">No shop drawings found</td></tr>';
             return;
         }
@@ -1120,7 +1662,7 @@ async function loadProjectShopDrawings(page = 1) {
         const textCls = wrap ? 'whitespace-normal break-words leading-relaxed' : 'truncate';
 
         let html = '';
-        data.data.forEach(d => {
+        records.forEach(d => {
             const aconexUrl = getAconexDocUrl(d);
             const tintClass = getRowTintClass('shop_drawings', d);
 
@@ -1150,7 +1692,8 @@ async function loadProjectShopDrawings(page = 1) {
 async function loadProjectMaterials(page = 1) {
     if (!activeProjectData) return;
     pageStates.material_submittals = page;
-    const pid = activeProjectData.info.project_id;
+    let pid = activeProjectData.info?.project_id || '';
+    if (pid === 'MMS / Substation') pid = 'MMS';
     const search = document.getElementById('sub-mat-search')?.value || '';
     const disc = document.getElementById('sub-mat-discipline')?.value || '';
     const status = document.getElementById('sub-mat-status')?.value || '';
@@ -1167,12 +1710,18 @@ async function loadProjectMaterials(page = 1) {
         if (status) url += `&status=${encodeURIComponent(status)}`;
 
         const res = await fetch(url);
+        if (!res.ok) {
+            const errJson = await res.json().catch(() => ({}));
+            throw new Error(errJson.detail || `Server returned HTTP ${res.status}`);
+        }
         const data = await res.json();
-        totalCounts.material_submittals = data.total;
+        const records = Array.isArray(data.data) ? data.data : (Array.isArray(data) ? data : []);
+        const total = typeof data.total === 'number' ? data.total : records.length;
+        totalCounts.material_submittals = total;
 
-        updatePaginationUI('material_submittals', page, limit, data.total, data.data.length);
+        updatePaginationUI('material_submittals', page, limit, total, records.length);
 
-        if (data.data.length === 0) {
+        if (records.length === 0) {
             tbody.innerHTML = '<tr><td colspan="6" class="text-center py-8 text-slate-500">No material submittals found</td></tr>';
             return;
         }
@@ -1181,7 +1730,7 @@ async function loadProjectMaterials(page = 1) {
         const textCls = wrap ? 'whitespace-normal break-words leading-relaxed' : 'truncate';
 
         let html = '';
-        data.data.forEach(d => {
+        records.forEach(d => {
             const aconexUrl = getAconexDocUrl(d);
             const tintClass = getRowTintClass('material_submittals', d);
 
@@ -1211,7 +1760,8 @@ async function loadProjectMaterials(page = 1) {
 async function loadProjectWorkflows(page = 1) {
     if (!activeProjectData) return;
     pageStates.workflows = page;
-    const pid = activeProjectData.info.project_id;
+    let pid = activeProjectData.info?.project_id || '';
+    if (pid === 'MMS / Substation') pid = 'MMS';
     const search = document.getElementById('sub-wf-search')?.value || '';
     const status = document.getElementById('sub-wf-status')?.value || '';
     const overdue = document.getElementById('sub-wf-overdue')?.checked;
@@ -1228,12 +1778,18 @@ async function loadProjectWorkflows(page = 1) {
         if (overdue) url += `&has_overdue=true`;
 
         const res = await fetch(url);
+        if (!res.ok) {
+            const errJson = await res.json().catch(() => ({}));
+            throw new Error(errJson.detail || `Server returned HTTP ${res.status}`);
+        }
         const data = await res.json();
-        totalCounts.workflows = data.total;
+        const records = Array.isArray(data.data) ? data.data : (Array.isArray(data) ? data : []);
+        const total = typeof data.total === 'number' ? data.total : records.length;
+        totalCounts.workflows = total;
 
-        updatePaginationUI('workflows', page, limit, data.total, data.data.length);
+        updatePaginationUI('workflows', page, limit, total, records.length);
 
-        if (data.data.length === 0) {
+        if (records.length === 0) {
             tbody.innerHTML = '<tr><td colspan="8" class="text-center py-8 text-slate-500">No workflows match filters</td></tr>';
             return;
         }
@@ -1242,7 +1798,7 @@ async function loadProjectWorkflows(page = 1) {
         const textCls = wrap ? 'whitespace-normal break-words leading-relaxed' : 'truncate';
 
         let html = '';
-        data.data.forEach(w => {
+        records.forEach(w => {
             const aconexUrl = getAconexWorkflowUrl(w);
             const statusBadge = w.status === 'Active' ? `<span class="px-1.5 py-0.5 rounded text-[10px] bg-sky-500/20 text-sky-400 border border-sky-500/30 font-semibold">Review</span>` :
                                 `<span class="px-1.5 py-0.5 rounded text-[10px] bg-slate-800 text-slate-400">${w.status}</span>`;
@@ -1345,7 +1901,8 @@ async function loadProjectWorkflows(page = 1) {
 async function loadProjectOtherMail(page = 1) {
     if (!activeProjectData) return;
     pageStates.other_mail = page;
-    const pid = activeProjectData.info.project_id;
+    let pid = activeProjectData.info?.project_id || '';
+    if (pid === 'MMS / Substation') pid = 'MMS';
     const search = document.getElementById('sub-othermail-search')?.value || '';
     const mailType = document.getElementById('sub-othermail-type')?.value || '';
     const overdue = document.getElementById('sub-othermail-overdue')?.checked;
@@ -1362,12 +1919,18 @@ async function loadProjectOtherMail(page = 1) {
         if (overdue) url += `&is_overdue=true`;
 
         const res = await fetch(url);
+        if (!res.ok) {
+            const errJson = await res.json().catch(() => ({}));
+            throw new Error(errJson.detail || `Server returned HTTP ${res.status}`);
+        }
         const data = await res.json();
-        totalCounts.other_mail = data.total;
+        const records = Array.isArray(data.data) ? data.data : (Array.isArray(data) ? data : []);
+        const total = typeof data.total === 'number' ? data.total : records.length;
+        totalCounts.other_mail = total;
 
-        updatePaginationUI('other_mail', page, limit, data.total, data.data.length);
+        updatePaginationUI('other_mail', page, limit, total, records.length);
 
-        if (data.data.length === 0) {
+        if (records.length === 0) {
             if (overdue) {
                 tbody.innerHTML = `<tr><td colspan="8" class="text-center py-8 text-slate-400">
                     <p class="font-semibold text-slate-300 mb-1">No overdue items found for this selection.</p>
@@ -1386,7 +1949,7 @@ async function loadProjectOtherMail(page = 1) {
         const textCls = wrap ? 'whitespace-normal break-words leading-relaxed' : 'truncate';
 
         let html = '';
-        data.data.forEach(m => {
+        records.forEach(m => {
             const aconexUrl = getAconexMailUrl(m);
             const tintClass = getRowTintClass('other_mail', m);
 
@@ -1418,7 +1981,8 @@ async function loadProjectOtherMail(page = 1) {
 async function loadProjectOtherDocs(page = 1) {
     if (!activeProjectData) return;
     pageStates.other_docs = page;
-    const pid = activeProjectData.info.project_id;
+    let pid = activeProjectData.info?.project_id || '';
+    if (pid === 'MMS / Substation') pid = 'MMS';
     const search = document.getElementById('sub-otherdocs-search')?.value || '';
     const docType = document.getElementById('sub-otherdocs-type')?.value || '';
     const disc = document.getElementById('sub-otherdocs-discipline')?.value || '';
@@ -1437,12 +2001,18 @@ async function loadProjectOtherDocs(page = 1) {
         if (status) url += `&status=${encodeURIComponent(status)}`;
 
         const res = await fetch(url);
+        if (!res.ok) {
+            const errJson = await res.json().catch(() => ({}));
+            throw new Error(errJson.detail || `Server returned HTTP ${res.status}`);
+        }
         const data = await res.json();
-        totalCounts.other_docs = data.total;
+        const records = Array.isArray(data.data) ? data.data : (Array.isArray(data) ? data : []);
+        const total = typeof data.total === 'number' ? data.total : records.length;
+        totalCounts.other_docs = total;
 
-        updatePaginationUI('other_docs', page, limit, data.total, data.data.length);
+        updatePaginationUI('other_docs', page, limit, total, records.length);
 
-        if (data.data.length === 0) {
+        if (records.length === 0) {
             tbody.innerHTML = '<tr><td colspan="7" class="text-center py-8 text-slate-500">No other documents found</td></tr>';
             return;
         }
@@ -1451,7 +2021,7 @@ async function loadProjectOtherDocs(page = 1) {
         const textCls = wrap ? 'whitespace-normal break-words leading-relaxed' : 'truncate';
 
         let html = '';
-        data.data.forEach(d => {
+        records.forEach(d => {
             const aconexUrl = getAconexDocUrl(d);
             const tintClass = getRowTintClass('other_docs', d);
 
@@ -1504,12 +2074,18 @@ async function loadProjectTransmittals(page = 1) {
         if (disc && disc !== 'all') params.append('discipline', disc);
         if (status && status !== 'all') params.append('status', status);
 
+        if (pid === 'MMS / Substation') pid = 'MMS';
         const res = await fetch(`/api/projects/${encodeURIComponent(pid)}/transmittals?${params.toString()}`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        if (!res.ok) {
+            const errJson = await res.json().catch(() => ({}));
+            throw new Error(errJson.detail || `Server returned HTTP ${res.status}`);
+        }
         const data = await res.json();
-        totalCounts.transmittals = data.total;
+        const records = Array.isArray(data.data) ? data.data : (Array.isArray(data) ? data : []);
+        const total = typeof data.total === 'number' ? data.total : records.length;
+        totalCounts.transmittals = total;
 
-        updatePaginationUI('transmittals', page, limit, data.total, data.data.length);
+        updatePaginationUI('transmittals', page, limit, total, records.length);
 
         // Populate Filter Dropdowns dynamically
         if (data.filter_options) {
@@ -1532,7 +2108,7 @@ async function loadProjectTransmittals(page = 1) {
             const statSel = document.getElementById('sub-transmittals-status');
             if (statSel && statSel.options.length <= 1 && data.filter_options.statuses) {
                 const cur = statSel.value;
-                let html = '<option value="">All Statuses</option>';
+                let html = '<option value="">All Status</option>';
                 data.filter_options.statuses.forEach(s => { html += `<option value="${s}">${s}</option>`; });
                 statSel.innerHTML = html;
                 if (cur) statSel.value = cur;
@@ -1804,30 +2380,41 @@ function clearTableSort(tableKey, reload = true) {
 function renderSortBadges(tableKey) {
     const container = document.getElementById(`sort-indicators-${tableKey}`);
     const clearBtn = document.getElementById(`clear-sort-${tableKey}-btn`);
-    if (!container) return;
+    const currentList = sortStates[tableKey] || [];
 
-    const currentList = sortStates[tableKey];
-    if (currentList.length === 0) {
-        container.innerHTML = '<span class="text-slate-600 text-[11px]">Default order</span>';
-        if (clearBtn) clearBtn.classList.add('hidden');
-        return;
+    // Keep the toolbar clean! Only show a sleek Reset Sort button when sorting is active
+    if (container) {
+        container.innerHTML = '';
+    }
+    if (clearBtn) {
+        if (currentList.length > 0) clearBtn.classList.remove('hidden');
+        else clearBtn.classList.add('hidden');
     }
 
-    if (clearBtn) clearBtn.classList.remove('hidden');
-
-    let html = '<span class="text-[11px] text-slate-400 font-semibold mr-1">Active Sort:</span>';
-    currentList.forEach((s, idx) => {
-        const arrow = s.dir === 'ASC' ? '▲' : '▼';
-        const colLabel = s.col.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase());
-        html += `
-            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-mono bg-sky-950 text-sky-300 border border-sky-500/30">
-                <span class="text-sky-500 font-bold">${idx + 1}.</span>
-                <span>${colLabel}</span>
-                <span class="font-bold text-white">${arrow}</span>
-            </span>
-        `;
-    });
-    container.innerHTML = html;
+    // Render sort indicator badges DIRECTLY on the <th> headers of the table
+    const table = document.getElementById(`table-${tableKey}`);
+    if (table) {
+        const ths = table.querySelectorAll('thead th');
+        ths.forEach(th => {
+            const badge = th.querySelector('.sort-badge');
+            const colKey = th.getAttribute('onclick')?.match(/'([^']+)',\s*event/)?.[1] || '';
+            const sortEntry = currentList.find(s => s.col === colKey);
+            if (!badge) return;
+            if (!sortEntry) {
+                badge.innerHTML = '';
+                th.classList.remove('text-amber-400', 'bg-slate-800/60');
+            } else {
+                const arrow = sortEntry.dir === 'ASC' ? '▲' : '▼';
+                if (currentList.length > 1) {
+                    const level = currentList.indexOf(sortEntry) + 1;
+                    badge.innerHTML = `<span class="px-1 py-0.2 rounded bg-amber-500/20 text-amber-300 font-mono text-[9px]">${arrow} ${level}</span>`;
+                } else {
+                    badge.innerHTML = `<span class="text-amber-400 font-mono text-[10px]">${arrow}</span>`;
+                }
+                th.classList.add('text-amber-400');
+            }
+        });
+    }
 }
 
 function buildSortQueryString(tableKey) {
@@ -1854,14 +2441,18 @@ function updatePaginationUI(tableKey, page, limit, total, currentCount) {
     const nextBtnTop = document.getElementById(`sub-${prefix}-next-btn-top`);
     const pageIndicatorTop = document.getElementById(`sub-${prefix}-page-indicator-top`);
 
-    const totalPages = Math.ceil(total / limit) || 1;
-    const start = total === 0 ? 0 : (page - 1) * limit + 1;
-    const end = (page - 1) * limit + currentCount;
+    const safeTotal = Number(total || 0);
+    const safeCount = Number(currentCount || 0);
+    const totalPages = Math.ceil(safeTotal / limit) || 1;
+    const start = safeTotal === 0 ? 0 : (page - 1) * limit + 1;
+    const end = (page - 1) * limit + safeCount;
 
-    const infoText = `Showing ${start.toLocaleString()} - ${end.toLocaleString()} of ${Number(total).toLocaleString()}`;
+    const infoText = safeTotal === 0 ? 'Showing 0 of 0' : `Showing ${start.toLocaleString()} - ${end.toLocaleString()} of ${safeTotal.toLocaleString()}`;
     const pageText = `Page ${page} of ${totalPages}`;
 
+    const infoElBottom = document.getElementById(`sub-${prefix}-pagination-info-bottom`);
     if (infoEl) infoEl.innerText = infoText;
+    if (infoElBottom) infoElBottom.innerText = infoText;
     if (pageIndicator) pageIndicator.innerText = pageText;
     if (pageIndicatorTop) pageIndicatorTop.innerText = pageText;
 
@@ -1926,19 +2517,22 @@ function changeLimit(tableKey) {
 // ==========================================
 function exportCurrentProjectExcel() {
     if (!activeProjectData) return;
-    const pid = activeProjectData.info.project_id;
+    let pid = activeProjectData.info?.project_id || '';
+    if (pid === 'MMS / Substation') pid = 'MMS';
     window.location.href = `/api/projects/${encodeURIComponent(pid)}/export`;
 }
 
 function exportCurrentProjectRfiLog() {
     if (!activeProjectData || !activeProjectData.info) return;
-    const pid = activeProjectData.info.project_id;
+    let pid = activeProjectData.info?.project_id || '';
+    if (pid === 'MMS / Substation') pid = 'MMS';
     window.location.href = `/api/rfi_explore/export_excel?project_id=${encodeURIComponent(pid)}`;
 }
 
 function exportFilteredData(category) {
     if (!activeProjectData || !activeProjectData.info) return;
-    const pid = activeProjectData.info.project_id;
+    let pid = activeProjectData.info?.project_id || '';
+    if (pid === 'MMS / Substation') pid = 'MMS';
     let url = `/api/projects/${encodeURIComponent(pid)}/export_filtered?category=${encodeURIComponent(category)}`;
 
     if (category === 'letters') {
@@ -2024,16 +2618,40 @@ function exportFilteredData(category) {
 // 7. PRIMARY TABS & CONTROLS DISPATCH
 // ==========================================
 function switchPrimaryTab(tab) {
+    if (tab === 'settings' || tab === 'sync') {
+        if (typeof window.isAdminUnlocked === 'function' && !window.isAdminUnlocked()) {
+            if (typeof window.promptAdminUnlock === 'function') {
+                window.promptAdminUnlock(() => {
+                    if (tab === 'sync') {
+                        switchPrimaryTab('settings');
+                        switchSettingsSubTab('sync');
+                    } else {
+                        switchPrimaryTab('settings');
+                    }
+                });
+                return;
+            }
+        }
+    }
+    if (tab === 'sync') {
+        switchPrimaryTab('settings');
+        switchSettingsSubTab('sync');
+        return;
+    }
     const tabsConfig = [
         { id: 'projects', btnId: 'tab-btn-projects', viewId: 'view-projects-hub', activeClass: 'bg-sky-600 shadow-sky-600/20' },
+        { id: 'daily_feed', btnId: 'tab-btn-daily-feed', viewId: 'view-daily-feed', activeClass: 'bg-amber-600 shadow-amber-600/20', onOpen: () => loadDailyFeed(1) },
         { id: 'controls', btnId: 'tab-btn-controls', viewId: 'view-project-controls', activeClass: 'bg-rose-600 shadow-rose-600/20', onOpen: initControlsTab },
         { id: 'hill_internal', btnId: 'tab-btn-hill-internal', viewId: 'view-hill-internal-controls', activeClass: 'bg-emerald-600 shadow-emerald-600/20', onOpen: loadHillTeamControls },
         { id: 'hill_ssc_direct', btnId: 'tab-btn-hill-ssc-direct', viewId: 'view-hill-ssc-direct', activeClass: 'bg-purple-600 shadow-purple-600/20', onOpen: () => loadHillSscDirect(1) },
         { id: 'ball_in_court', btnId: 'tab-btn-ball-in-court', viewId: 'view-ball-in-court', activeClass: 'bg-amber-600 shadow-amber-600/20', onOpen: () => loadBallInCourtData(1) },
+        { id: 'sync', btnId: 'tab-btn-sync', viewId: 'view-sync', activeClass: 'bg-emerald-600 shadow-emerald-600/20', onOpen: loadSyncStatus },
         { id: 'discipline_safety', btnId: 'tab-btn-discipline-safety', viewId: 'view-discipline-safety', activeClass: 'bg-emerald-600 shadow-emerald-600/20', onOpen: () => loadDisciplineSafety(1) },
         { id: 'discipline_qaqc', btnId: 'tab-btn-discipline-qaqc', viewId: 'view-discipline-qaqc', activeClass: 'bg-cyan-600 shadow-cyan-600/20', onOpen: () => loadDisciplineQaqc(1) },
         { id: 'discipline_site', btnId: 'tab-btn-discipline-site', viewId: 'view-discipline-site', activeClass: 'bg-amber-600 shadow-amber-600/20', onOpen: () => loadDisciplineSite(1) },
         { id: 'discipline_tech', btnId: 'tab-btn-discipline-tech', viewId: 'view-discipline-tech', activeClass: 'bg-indigo-600 shadow-indigo-600/20', onOpen: () => loadDisciplineTech(1) },
+        { id: 'discipline_contractual', btnId: 'tab-btn-discipline-contractual', viewId: 'view-discipline-contractual', activeClass: 'bg-blue-600 shadow-blue-600/20', onOpen: () => loadDisciplineContractual(1) },
+        { id: 'discipline_commercial', btnId: 'tab-btn-discipline-commercial', viewId: 'view-discipline-commercial', activeClass: 'bg-emerald-600 shadow-emerald-600/20', onOpen: () => loadDisciplineCommercial(1) },
         { id: 'settings', btnId: 'tab-btn-settings', viewId: 'view-settings', activeClass: 'bg-indigo-600 shadow-indigo-600/20', onOpen: loadDispatchSettings }
     ];
 
@@ -2044,7 +2662,13 @@ function switchPrimaryTab(tab) {
     tabsConfig.forEach(t => {
         const btn = document.getElementById(t.btnId);
         const view = document.getElementById(t.viewId);
-        if (btn) btn.className = inactiveBtnClass;
+        if (btn) {
+            if (t.id === 'settings') {
+                btn.className = 'w-full px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-400 hover:text-white hover:bg-slate-900/90 transition flex items-center justify-between group cursor-pointer border border-transparent hover:border-slate-800';
+            } else {
+                btn.className = inactiveBtnClass;
+            }
+        }
         if (view) view.classList.add('hidden');
     });
 
@@ -2053,7 +2677,11 @@ function switchPrimaryTab(tab) {
     const activeView = document.getElementById(activeTab.viewId);
 
     if (activeBtn) {
-        activeBtn.className = `w-full px-3.5 py-2.5 rounded-xl text-xs font-bold ${activeTab.activeClass} text-white flex items-center justify-between shadow-md transition group text-left cursor-pointer`;
+        if (activeTab.id === 'settings') {
+            activeBtn.className = 'w-full px-2.5 py-1.5 rounded-lg text-xs font-bold bg-indigo-600 text-white shadow-md shadow-indigo-600/20 border border-indigo-500 flex items-center justify-between transition group cursor-pointer';
+        } else {
+            activeBtn.className = `w-full px-3.5 py-2.5 rounded-xl text-xs font-bold ${activeTab.activeClass} text-white flex items-center justify-between shadow-md transition group text-left cursor-pointer`;
+        }
     }
 
     if (activeTab.id === 'projects') {
@@ -2110,7 +2738,7 @@ async function initCtrlMasterPlanMap() {
 
     if (!ctrlMasterPlanLoaded) {
         try {
-            const res = await fetch('/static/images/master_plan_interactive.svg');
+            const res = await fetch(`/static/images/master_plan_interactive.svg?v=${Date.now()}`);
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             let svgContent = await res.text();
 
@@ -2257,7 +2885,10 @@ function attachCtrlMasterPlanInteractivity(container, viewport, tooltip) {
         el.addEventListener('click', (e) => {
             e.stopPropagation();
             const aid = el.getAttribute('data-area-id') || el.id;
-            const pid = el.getAttribute('data-project-id') || aid;
+            let pid = el.getAttribute('data-project-id') || aid;
+            if (pid === 'Ring Road' || pid === 'Ring_x20_Road' || aid === 'Ring_x20_Road') {
+                pid = 'Infra';
+            }
             onCtrlMapSelectProject(pid, aid);
         });
     });
@@ -3054,7 +3685,7 @@ function getCtrlFilteredItems() {
             title: w.document_title || w.workflow_name || '-',
             step_info: `${w.step_name || 'Review'} (${w.assigned_to_organization || w.assigned_org || '-'})`,
             due_date: w.due_date || w.date_due || '-', days_late: w.days_late || 0,
-            aconex_url: w.aconex_url, sec: 'workflows'
+            aconex_url: w.aconex_url, doc_aconex_url: w.doc_aconex_url || w.aconex_url, sec: 'workflows'
         });
     });
     (ctrlActiveReport.mails || []).forEach(m => {
@@ -3147,7 +3778,7 @@ function renderCtrlTable() {
                         ${it.ref}
                     </a>
                 </td>
-                <td class="p-3 font-mono text-slate-300 text-xs">${it.doc_no}</td>
+                <td class="p-3 font-mono text-slate-300 text-xs">${it.doc_no && it.doc_no !== '-' && (it.doc_aconex_url || it.aconex_url) ? `<a href="${it.doc_aconex_url || it.aconex_url}" target="_blank" class="text-sky-300 hover:underline font-semibold" title="Open Document in Aconex">${it.doc_no}</a>` : it.doc_no}</td>
                 <td class="p-3 text-slate-200 font-medium">${it.title}</td>
                 <td class="p-3 text-slate-400 text-xs">${it.step_info}</td>
                 <td class="p-3 font-mono text-slate-400 text-xs whitespace-nowrap">${formatAppDate(it.due_date)}</td>
@@ -3214,9 +3845,11 @@ function generateEmailHtml(report, wfs, mails, rfis, scrs = []) {
     if (wfs.length > 0) {
         html += `<h3 style="font-size: 14px; border-bottom: 2px solid #0f172a; padding-bottom: 4px;">1. Review Workflows (${wfs.length})</h3>
         <table style="width: 100%; border-collapse: collapse; font-size: 11px; margin-bottom: 15px;">
-            <tr style="background: #1e293b; color: white;"><th style="padding: 6px; text-align: left;">Workflow No</th><th style="padding: 6px; text-align: left;">Title</th><th style="padding: 6px; text-align: left;">Assignee</th><th style="padding: 6px;">Due</th><th style="padding: 6px;">Late</th></tr>`;
+            <tr style="background: #1e293b; color: white;"><th style="padding: 6px; text-align: left;">Workflow No</th><th style="padding: 6px; text-align: left;">Document No</th><th style="padding: 6px; text-align: left;">Title</th><th style="padding: 6px; text-align: left;">Assignee</th><th style="padding: 6px;">Due</th><th style="padding: 6px;">Late</th></tr>`;
         wfs.forEach(w => {
-            html += `<tr style="border-bottom: 1px solid #e2e8f0;"><td style="padding: 6px;"><a href="${w.aconex_url}" style="color: #0284c7; font-weight: bold;">${w.workflow_no}</a></td><td style="padding: 6px;">${w.document_title || w.workflow_name || '-'}</td><td style="padding: 6px;">${w.assigned_to_organization || w.assigned_org || '-'}</td><td style="padding: 6px; text-align: center;">${w.due_date || '-'}</td><td style="padding: 6px; text-align: center; color: #dc2626; font-weight: bold;">+${w.days_late || 0}d</td></tr>`;
+            const docUrl = w.doc_aconex_url || w.aconex_url;
+            const docCell = w.document_no && w.document_no !== '-' ? `<a href="${docUrl}" target="_blank" style="color: #0284c7; font-weight: bold; text-decoration: underline;">${w.document_no}</a>` : '-';
+            html += `<tr style="border-bottom: 1px solid #e2e8f0;"><td style="padding: 6px;"><a href="${w.aconex_url}" target="_blank" style="color: #0284c7; font-weight: bold;">${w.workflow_no}</a></td><td style="padding: 6px; font-family: monospace;">${docCell}</td><td style="padding: 6px;">${w.document_title || w.workflow_name || '-'}</td><td style="padding: 6px;">${w.assigned_to_organization || w.assigned_org || '-'}</td><td style="padding: 6px; text-align: center;">${w.due_date || '-'}</td><td style="padding: 6px; text-align: center; color: #dc2626; font-weight: bold;">+${w.days_late || 0}d</td></tr>`;
         });
         html += `</table>`;
     }
@@ -3715,6 +4348,10 @@ function closeRfiThreadModal() {
     const modal = document.getElementById('modal-rfi-thread');
     if (modal) modal.classList.add('hidden');
 }
+window.openLetterThreadModal = openLetterThreadModal;
+window.openRfiThreadModal = openRfiThreadModal;
+window.closeRfiThreadModal = closeRfiThreadModal;
+window.filterRfiThreadSteps = filterRfiThreadSteps;
 
 function showToast(msg, type = 'info') {
     let box = document.getElementById('app-toast-box');
@@ -4061,6 +4698,10 @@ function renderHillTeamTable(engineers) {
     });
 
     tbody.innerHTML = html;
+    if (window.AntigravityTableEngine) {
+        AntigravityTableEngine.initTable('feed-table');
+        AntigravityTableEngine.applyColumnVisibility('feed-table');
+    }
     if (window.lucide) lucide.createIcons();
 }
 
@@ -4278,7 +4919,7 @@ async function openHillDossier(encodedName) {
                                         <td class="p-2.5 font-mono">
                                             <a href="${s.aconex_url}" target="_blank" class="text-sky-400 hover:underline font-bold">${s.workflow_no}</a>
                                         </td>
-                                        <td class="p-2.5 font-mono text-slate-300">${s.document_no || '-'}</td>
+                                        <td class="p-2.5 font-mono text-slate-300">${s.document_no && s.document_no !== '-' ? `<a href="${s.doc_aconex_url || s.aconex_url}" target="_blank" class="text-sky-300 hover:underline font-bold" title="Open Document in Aconex">${s.document_no}</a>` : '-'}</td>
                                         <td class="p-2.5 text-white">${s.document_title || '-'}</td>
                                         <td class="p-2.5 text-slate-300">${s.step_name || 'Review Step'}</td>
                                         <td class="p-2.5 font-mono text-slate-400 whitespace-nowrap">${formatAppDate(s.date_due)}</td>
@@ -4318,7 +4959,7 @@ async function openHillDossier(encodedName) {
                                         <td class="p-2.5 font-mono">
                                             <a href="${s.aconex_url}" target="_blank" class="text-sky-400 hover:underline font-bold">${s.workflow_no}</a>
                                         </td>
-                                        <td class="p-2.5 font-mono text-slate-300">${s.document_no || '-'}</td>
+                                        <td class="p-2.5 font-mono text-slate-300">${s.document_no && s.document_no !== '-' ? `<a href="${s.doc_aconex_url || s.aconex_url}" target="_blank" class="text-sky-300 hover:underline font-bold" title="Open Document in Aconex">${s.document_no}</a>` : '-'}</td>
                                         <td class="p-2.5 text-white">${s.document_title || '-'}</td>
                                         <td class="p-2.5 text-slate-300">${s.step_name || 'Review Step'}</td>
                                         <td class="p-2.5 font-mono text-slate-400 whitespace-nowrap">${formatAppDate(s.date_due)}</td>
@@ -4569,6 +5210,10 @@ function renderHillSscDirectTable(data) {
     });
 
     tbody.innerHTML = html;
+    if (window.AntigravityTableEngine) {
+        AntigravityTableEngine.initTable('feed-table');
+        AntigravityTableEngine.applyColumnVisibility('feed-table');
+    }
     if (window.lucide) lucide.createIcons();
 }
 
@@ -5027,12 +5672,10 @@ function renderBallInCourtTable(rows) {
                 <td class="p-3 font-mono font-bold text-sky-400 whitespace-nowrap">
                     <div class="flex items-center gap-1.5 mb-1">
                         ${typeBadge}
-                        ${r.aconex_url 
-                            ? `<a href="${r.aconex_url}" target="_blank" class="hover:underline flex items-center gap-1 group">
-                                 <span>${r.process_ref || '-'}</span>
-                                 <i data-lucide="external-link" class="w-3 h-3 opacity-0 group-hover:opacity-100 transition text-sky-400"></i>
-                               </a>`
-                            : (r.process_ref || '-')}
+                        <a href="/api/aconex/mail?mail_no=${encodeURIComponent(r.mail_no || r.process_ref)}" target="_blank" class="hover:underline flex items-center gap-1 group" title="Open directly in Aconex">
+                            <span>${r.process_ref || '-'}</span>
+                            <i data-lucide="external-link" class="w-3 h-3 opacity-0 group-hover:opacity-100 transition text-sky-400"></i>
+                        </a>
                     </div>
                     <div class="text-[10px] font-sans font-normal text-slate-500 truncate mt-0.5">${r.project_package || ''}</div>
                 </td>
@@ -5067,6 +5710,10 @@ function renderBallInCourtTable(rows) {
     });
 
     tbody.innerHTML = html;
+    if (window.AntigravityTableEngine) {
+        AntigravityTableEngine.initTable('feed-table');
+        AntigravityTableEngine.applyColumnVisibility('feed-table');
+    }
     if (window.lucide) lucide.createIcons();
 }
 
@@ -5088,14 +5735,29 @@ function updateBallInCourtPagination(page, limit, total) {
     const btnPrev = document.getElementById('bic-btn-prev');
     const btnNext = document.getElementById('bic-btn-next');
 
+    const elRangeTop = document.getElementById('bic-showing-range-top');
+    const elPageTop = document.getElementById('bic-page-indicator-top');
+    const btnPrevTop = document.getElementById('bic-btn-prev-top');
+    const btnNextTop = document.getElementById('bic-btn-next-top');
+
+    const totalPages = Math.ceil(total / limit) || 1;
     const start = total === 0 ? 0 : (page - 1) * limit + 1;
     const end = Math.min(total, page * limit);
+    const rangeText = `Showing ${start}-${end} of ${total.toLocaleString()}`;
+    const pageText = `Page ${page} of ${totalPages}`;
 
-    if (elRange) elRange.innerText = `Showing ${start}-${end} of ${total.toLocaleString()}`;
-    if (elPage) elPage.innerText = `Page ${page} of ${Math.ceil(total / limit) || 1}`;
+    if (elRange) elRange.innerText = rangeText;
+    if (elRangeTop) elRangeTop.innerText = rangeText;
+    if (elPage) elPage.innerText = pageText;
+    if (elPageTop) elPageTop.innerText = pageText;
 
-    if (btnPrev) btnPrev.disabled = page <= 1;
-    if (btnNext) btnNext.disabled = end >= total;
+    const isPrevDisabled = page <= 1;
+    const isNextDisabled = end >= total;
+
+    if (btnPrev) btnPrev.disabled = isPrevDisabled;
+    if (btnPrevTop) btnPrevTop.disabled = isPrevDisabled;
+    if (btnNext) btnNext.disabled = isNextDisabled;
+    if (btnNextTop) btnNextTop.disabled = isNextDisabled;
 }
 
 function applyBallInCourtFilters() {
@@ -5522,6 +6184,7 @@ function handleAiChatSubmit(e) {
     if (!input) return;
     const msg = (input.value || '').trim();
     if (!msg) return;
+    if (!aiCopilotOpen) toggleAiCopilot(true);
     sendAiChatMessage(msg);
 }
 
@@ -5553,7 +6216,7 @@ function clearAiChatHistory() {
                     </div>
                     <div class="bg-slate-900 p-2 rounded-lg border border-slate-800">
                         <span class="font-semibold text-emerald-400">Arabic query example:</span>
-                        <div class="text-slate-400 italic mt-0.5">"طلعلي كل ال RFI في مشروع DP03-West من يوم 2026-06-01"</div>
+                        <div class="text-slate-400 italic mt-0.5">"Show me all RFIs in project DP03-West since 2026-06-01"</div>
                     </div>
                 </div>
             </div>
@@ -5598,10 +6261,14 @@ function formatMarkdown(text) {
 
 async function sendAiChatMessage(userMessage) {
     if (!userMessage || isAiThinking) return;
+    if (!aiCopilotOpen) toggleAiCopilot(true);
     const container = document.getElementById('ai-chat-messages');
     const input = document.getElementById('ai-chat-input');
     const sendBtn = document.getElementById('ai-send-btn');
-    if (!container) return;
+    if (!container) {
+        console.error("AI chat messages container #ai-chat-messages not found");
+        return;
+    }
 
     if (input) input.value = '';
     isAiThinking = true;
@@ -5859,6 +6526,15 @@ function exportAiTableToCsv(tableId, filename = 'aconex_ai_query_results.csv') {
     showToast('Exported AI query results to CSV', 'success');
 }
 
+// Explicit Global Window Bindings for AI Copilot
+window.toggleAiCopilot = toggleAiCopilot;
+window.submitAiPrompt = submitAiPrompt;
+window.handleAiChatSubmit = handleAiChatSubmit;
+window.handleAiInputKeyDown = handleAiInputKeyDown;
+window.clearAiChatHistory = clearAiChatHistory;
+window.sendAiChatMessage = sendAiChatMessage;
+window.exportAiTableToCsv = exportAiTableToCsv;
+
 // =========================================================================
 // THEME SWITCHER (LIGHT MODE / DARK MODE)
 // =========================================================================
@@ -5879,10 +6555,11 @@ function setAppTheme(theme) {
     }
     localStorage.setItem('reh_app_theme', theme);
 
-    // Update theme toggle icons and labels
-    document.querySelectorAll('.theme-icon-sun').forEach(el => el.classList.toggle('hidden', !isLight));
-    document.querySelectorAll('.theme-icon-moon').forEach(el => el.classList.toggle('hidden', isLight));
-    document.querySelectorAll('.theme-toggle-label').forEach(el => el.innerText = isLight ? 'Light Mode' : 'Dark Mode');
+    // When dark, button shows Sun icon + "Light Mode" (action: switch to light)
+    // When light, button shows Moon icon + "Dark Mode" (action: switch to dark)
+    document.querySelectorAll('.theme-icon-sun').forEach(el => el.classList.toggle('hidden', isLight));
+    document.querySelectorAll('.theme-icon-moon').forEach(el => el.classList.toggle('hidden', !isLight));
+    document.querySelectorAll('.theme-toggle-label').forEach(el => el.innerText = isLight ? 'Dark Mode' : 'Light Mode');
 
     if (window.lucide) lucide.createIcons();
 }
@@ -6066,12 +6743,16 @@ async function loadContractorRfis(page = 1) {
             rfiBadge.innerText = `${(kpis.overdue_rfis ?? kpis.overdue_count ?? json.total_count ?? 0).toLocaleString()} Overdue RFIs`;
         }
 
-        // Populate dropdown options once
+        // Dynamically update responsible answering companies based on selected project
         const availableProjects = json.available_projects || json.filter_options?.projects || [];
         const availableCompanies = json.available_companies || json.filter_options?.companies || [];
-        if (!crfiFilterOptionsLoaded && (availableProjects.length > 0 || availableCompanies.length > 0)) {
-            populateContractorRfiFilters({ projects: availableProjects, companies: availableCompanies });
+        if (!crfiFilterOptionsLoaded && availableProjects.length > 0) {
+            populateContractorRfiFilters({ projects: availableProjects });
             crfiFilterOptionsLoaded = true;
+        }
+        // Always refresh company dropdown for current project selection
+        if (availableCompanies && availableCompanies.length > 0) {
+            updateContractorRfiCompanyDropdown(availableCompanies);
         }
 
         crfiTotal = json.total_count ?? json.total ?? 0;
@@ -6089,12 +6770,22 @@ async function loadContractorRfis(page = 1) {
         }
 
         const pageInd = document.getElementById('crfi-page-indicator');
-        if (pageInd) pageInd.innerText = `Page ${page} of ${totalPages}`;
+        const pageIndTop = document.getElementById('crfi-page-indicator-top');
+        const pageStr = `Page ${page} of ${totalPages}`;
+        if (pageInd) pageInd.innerText = pageStr;
+        if (pageIndTop) pageIndTop.innerText = pageStr;
 
         const prevBtn = document.getElementById('crfi-prev-btn');
+        const prevBtnTop = document.getElementById('crfi-prev-btn-top');
         const nextBtn = document.getElementById('crfi-next-btn');
-        if (prevBtn) prevBtn.disabled = page <= 1;
-        if (nextBtn) nextBtn.disabled = page >= totalPages;
+        const nextBtnTop = document.getElementById('crfi-next-btn-top');
+        const isPrevDisabled = page <= 1;
+        const isNextDisabled = page >= totalPages;
+
+        if (prevBtn) prevBtn.disabled = isPrevDisabled;
+        if (prevBtnTop) prevBtnTop.disabled = isPrevDisabled;
+        if (nextBtn) nextBtn.disabled = isNextDisabled;
+        if (nextBtnTop) nextBtnTop.disabled = isNextDisabled;
 
     } catch (err) {
         if (tbody) {
@@ -6399,7 +7090,15 @@ let currentDispatchSettings = null;
 
 async function loadDispatchSettings() {
     try {
-        const res = await fetch('/api/settings/dispatch');
+        const token = (typeof window.getAdminToken === 'function') ? window.getAdminToken() : '';
+        const headers = {};
+        if (token) headers['X-Admin-Key'] = token;
+        const res = await fetch('/api/settings/dispatch', { headers });
+        if (res.status === 403) {
+            console.warn("Settings access restricted to Administrator.");
+            if (typeof window.updateAdminUIState === 'function') window.updateAdminUIState();
+            return;
+        }
         if (!res.ok) throw new Error(`HTTP ${res.status}: Failed to load settings`);
         const json = await res.json();
         currentDispatchSettings = json;
@@ -6425,6 +7124,12 @@ async function loadDispatchSettings() {
 window.loadDispatchSettings = loadDispatchSettings;
 
 function switchSettingsSubTab(subtab) {
+    if (typeof window.isAdminUnlocked === 'function' && !window.isAdminUnlocked()) {
+        if (typeof window.promptAdminUnlock === 'function') {
+            window.promptAdminUnlock(() => switchSettingsSubTab(subtab));
+            return;
+        }
+    }
     const btnSsc = document.getElementById('btn-setting-tab-ssc');
     const btnRfi = document.getElementById('btn-setting-tab-rfi');
     const btnGemini = document.getElementById('btn-setting-tab-gemini');
@@ -6443,6 +7148,12 @@ function switchSettingsSubTab(subtab) {
     if (subSsc) subSsc.classList.toggle('hidden', subtab !== 'ssc');
     if (subRfi) subRfi.classList.toggle('hidden', subtab !== 'rfi');
     if (subGemini) subGemini.classList.toggle('hidden', subtab !== 'gemini');
+
+    const btnSync = document.getElementById('btn-setting-tab-sync');
+    const subSync = document.getElementById('settings-subtab-sync');
+    if (btnSync) btnSync.className = subtab === 'sync' ? activeBtnClass : inactiveBtnClass;
+    if (subSync) subSync.classList.toggle('hidden', subtab !== 'sync');
+    if (subtab === 'sync') loadSyncStatus();
 
     if (window.lucide) lucide.createIcons();
 }
@@ -6499,6 +7210,12 @@ function renderSscMatrixTable(sscData) {
 }
 
 async function saveSscEmailRow(pkg) {
+    if (typeof window.isAdminUnlocked === 'function' && !window.isAdminUnlocked()) {
+        if (typeof window.promptAdminUnlock === 'function') {
+            window.promptAdminUnlock(() => saveSscEmailRow(pkg));
+            return;
+        }
+    }
     const toInput = document.getElementById(`ssc-to-${pkg}`);
     const ccInput = document.getElementById(`ssc-cc-${pkg}`);
     if (!toInput || !ccInput) return;
@@ -6506,9 +7223,13 @@ async function saveSscEmailRow(pkg) {
     try {
         const toList = toInput.value.split(',').map(s => s.trim()).filter(s => s.length > 0);
         const ccList = ccInput.value.split(',').map(s => s.trim()).filter(s => s.length > 0);
+        const token = (typeof window.getAdminToken === 'function') ? window.getAdminToken() : '';
         const res = await fetch('/api/settings/ssc_emails', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 
+                'Content-Type': 'application/json',
+                'X-Admin-Key': token
+            },
             body: JSON.stringify({
                 project: pkg,
                 to: toList,
@@ -6524,10 +7245,17 @@ async function saveSscEmailRow(pkg) {
 window.saveSscEmailRow = saveSscEmailRow;
 
 async function saveAllSscEmails() {
+    if (typeof window.isAdminUnlocked === 'function' && !window.isAdminUnlocked()) {
+        if (typeof window.promptAdminUnlock === 'function') {
+            window.promptAdminUnlock(() => saveAllSscEmails());
+            return;
+        }
+    }
     if (!currentDispatchSettings) return;
     const sscObj = currentDispatchSettings.ssc_remind_emails || currentDispatchSettings.ssc_emails || {};
     const pkgs = Array.isArray(sscObj) ? sscObj.map(x => x.project) : Object.keys(sscObj);
     let savedCount = 0;
+    const token = (typeof window.getAdminToken === 'function') ? window.getAdminToken() : '';
     for (const pkg of pkgs) {
         const toInput = document.getElementById(`ssc-to-${pkg}`);
         const ccInput = document.getElementById(`ssc-cc-${pkg}`);
@@ -6537,7 +7265,10 @@ async function saveAllSscEmails() {
                 const ccList = ccInput.value.split(',').map(s => s.trim()).filter(s => s.length > 0);
                 await fetch('/api/settings/ssc_emails', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'X-Admin-Key': token
+                    },
                     body: JSON.stringify({
                         project: pkg,
                         to: toList,
@@ -6601,6 +7332,12 @@ function renderRfiMatrixTable(rfiData) {
 }
 
 function openAddRfiRoutingModal(ruleId = null) {
+    if (typeof window.isAdminUnlocked === 'function' && !window.isAdminUnlocked()) {
+        if (typeof window.promptAdminUnlock === 'function') {
+            window.promptAdminUnlock(() => openAddRfiRoutingModal(ruleId));
+            return;
+        }
+    }
     const modal = document.getElementById('modal-edit-rfi-routing');
     if (!modal) return;
 
@@ -6667,9 +7404,13 @@ async function handleSaveRfiRoutingModal(e) {
     const ccList = ccEmails.split(',').map(s => s.trim()).filter(s => s.length > 0);
 
     try {
+        const token = (typeof window.getAdminToken === 'function') ? window.getAdminToken() : '';
         const res = await fetch('/api/settings/rfi_emails', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 
+                'Content-Type': 'application/json',
+                'X-Admin-Key': token
+            },
             body: JSON.stringify({
                 id: ruleId,
                 project: project,
@@ -6689,10 +7430,18 @@ async function handleSaveRfiRoutingModal(e) {
 window.handleSaveRfiRoutingModal = handleSaveRfiRoutingModal;
 
 async function deleteRfiEmailRow(ruleId) {
+    if (typeof window.isAdminUnlocked === 'function' && !window.isAdminUnlocked()) {
+        if (typeof window.promptAdminUnlock === 'function') {
+            window.promptAdminUnlock(() => deleteRfiEmailRow(ruleId));
+            return;
+        }
+    }
     if (!confirm(`Are you sure you want to remove routing for this entry?`)) return;
     try {
+        const token = (typeof window.getAdminToken === 'function') ? window.getAdminToken() : '';
         const res = await fetch(`/api/settings/rfi_emails/${encodeURIComponent(ruleId)}`, {
-            method: 'DELETE'
+            method: 'DELETE',
+            headers: { 'X-Admin-Key': token }
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         showToast('Deleted RFI routing entry', 'info');
@@ -6711,6 +7460,12 @@ function toggleGeminiKeyVisibility() {
 window.toggleGeminiKeyVisibility = toggleGeminiKeyVisibility;
 
 async function saveGeminiSettings() {
+    if (typeof window.isAdminUnlocked === 'function' && !window.isAdminUnlocked()) {
+        if (typeof window.promptAdminUnlock === 'function') {
+            window.promptAdminUnlock(() => saveGeminiSettings());
+            return;
+        }
+    }
     const keyInput = document.getElementById('setting-gemini-key');
     const modelSelect = document.getElementById('setting-gemini-model');
 
@@ -6718,9 +7473,13 @@ async function saveGeminiSettings() {
     const model = modelSelect?.value || 'gemini-3-flash-preview';
 
     try {
+        const token = (typeof window.getAdminToken === 'function') ? window.getAdminToken() : '';
         const res = await fetch('/api/settings/gemini_config', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 
+                'Content-Type': 'application/json',
+                'X-Admin-Key': token
+            },
             body: JSON.stringify({ api_key: key, model: model })
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -6763,9 +7522,13 @@ async function testGeminiConnection() {
     }
 
     try {
+        const token = (typeof window.getAdminToken === 'function') ? window.getAdminToken() : '';
         const res = await fetch('/api/settings/gemini_test', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 
+                'Content-Type': 'application/json',
+                'X-Admin-Key': token
+            },
             body: JSON.stringify({ api_key: key, model: model })
         });
         const json = await res.json();
@@ -6811,18 +7574,22 @@ window.testGeminiConnection = testGeminiConnection;
 
 function renderDisciplinePagination(containerId, currentPage, limit, total, loadFnName) {
     const container = document.getElementById(containerId);
-    if (!container) return;
+    const containerTop = document.getElementById(containerId + '-top');
+    if (!container && !containerTop) return;
+
     if (total === 0) {
-        container.innerHTML = `<span class="text-slate-500">No records found</span>`;
+        const noRec = `<span class="text-slate-500 text-xs">No records found</span>`;
+        if (container) container.innerHTML = noRec;
+        if (containerTop) containerTop.innerHTML = noRec;
         return;
     }
     const totalPages = Math.ceil(total / limit) || 1;
     const start = (currentPage - 1) * limit + 1;
     const end = Math.min(total, currentPage * limit);
 
-    container.innerHTML = `
+    const buildHtml = () => `
         <div class="text-xs text-slate-400">
-            Showing <span class="font-bold text-slate-200">${start}-${end}</span> of <span class="font-bold text-slate-200">${total.toLocaleString()}</span> items
+            Showing <span class="font-bold text-slate-200">${start.toLocaleString()}-${end.toLocaleString()}</span> of <span class="font-bold text-slate-200">${total.toLocaleString()}</span> items
         </div>
         <div class="flex items-center gap-2">
             <button onclick="${loadFnName}(${currentPage - 1})" ${currentPage <= 1 ? 'disabled class="px-3 py-1.5 rounded-lg bg-slate-950 text-slate-600 border border-slate-800 text-xs font-semibold cursor-not-allowed"' : 'class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold transition cursor-pointer"'}>
@@ -6834,6 +7601,9 @@ function renderDisciplinePagination(containerId, currentPage, limit, total, load
             </button>
         </div>
     `;
+
+    if (container) container.innerHTML = buildHtml();
+    if (containerTop) containerTop.innerHTML = buildHtml();
 }
 
 // -----------------------------------------------------------------------------
@@ -6871,16 +7641,25 @@ function debounceSafetySearch() {
 }
 window.debounceSafetySearch = debounceSafetySearch;
 
-async function loadDisciplineSafety(page = 1) {
+async function setSafetyCategoryFilter(cat) {
+    const elCat = document.getElementById('safety-filter-category');
+    if (elCat) elCat.value = cat;
+    const elType = document.getElementById('safety-filter-type');
+    if (elType) elType.value = 'all';
+    loadDisciplineSafety(1);
+}
+window.setSafetyCategoryFilter = setSafetyCategoryFilter;
+
+function loadDisciplineSafety(page = 1) {
     safetyCurrentPage = page;
     const grid = document.getElementById('safety-grid-container');
     const tbody = document.getElementById('safety-table-tbody');
 
     if (grid && safetyViewMode === 'grid') {
-        grid.innerHTML = `<div class="col-span-full py-16 text-center text-slate-400 flex items-center justify-center gap-2"><i data-lucide="loader" class="w-5 h-5 animate-spin text-emerald-400"></i><span>Loading HSE &amp; Safety records...</span></div>`;
+        grid.innerHTML = `<div class="col-span-full py-16 text-center text-slate-400 flex items-center justify-center gap-2"><i data-lucide="loader" class="w-5 h-5 animate-spin text-emerald-400"></i><span>Loading HSE, Near Miss &amp; Governance records...</span></div>`;
     }
     if (tbody && safetyViewMode === 'table') {
-        tbody.innerHTML = `<tr><td colspan="8" class="text-center py-10 text-slate-400"><div class="flex items-center justify-center gap-2"><i data-lucide="loader" class="w-4 h-4 animate-spin text-emerald-400"></i><span>Loading HSE records...</span></div></td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="8" class="text-center py-10 text-slate-400"><div class="flex items-center justify-center gap-2"><i data-lucide="loader" class="w-4 h-4 animate-spin text-emerald-400"></i><span>Loading HSE &amp; MOM records...</span></div></td></tr>`;
     }
     if (window.lucide) lucide.createIcons();
 
@@ -6892,56 +7671,67 @@ async function loadDisciplineSafety(page = 1) {
                 setEl('stat-safety-observations', stats.total_observations);
                 setEl('stat-safety-remedial', stats.remedial_actions);
                 setEl('stat-safety-closed', stats.closed_observations);
-                setEl('stat-safety-transmittals', (stats.hse_ncrs || 0) + (stats.hse_transmittals || 0));
+                setEl('stat-safety-ncrs', stats.hse_ncrs);
+                setEl('stat-safety-near-miss', stats.total_near_miss_incidents || ((stats.near_misses || 0) + (stats.incidents || 0)));
+                setEl('stat-safety-mom', stats.meeting_minutes);
             })
             .catch(err => console.error('Failed to load safety stats:', err));
     }
 
     const pkg = document.getElementById('safety-filter-project')?.value || 'all';
+    const category = document.getElementById('safety-filter-category')?.value || 'all';
     const type = document.getElementById('safety-filter-type')?.value || 'all';
     const status = document.getElementById('safety-filter-status')?.value || 'all';
     const search = document.getElementById('safety-search-input')?.value || '';
 
     const params = new URLSearchParams({ page: safetyCurrentPage, limit: 30 });
     if (pkg !== 'all') params.append('project', pkg);
+    if (category !== 'all') params.append('category', category);
     if (type !== 'all') params.append('item_type', type);
     if (status !== 'all') params.append('status', status);
     if (search.trim()) params.append('search', search.trim());
 
-    try {
-        const res = await fetch(`/api/disciplines/safety/items?${params.toString()}`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-
-        if (!safetyFilterLoaded) {
-            const selPkg = document.getElementById('safety-filter-project');
-            if (selPkg && data.projects) {
-                data.projects.forEach(p => {
-                    const opt = document.createElement('option');
-                    opt.value = p;
-                    opt.innerText = p;
-                    selPkg.appendChild(opt);
-                });
+    fetch(`/api/disciplines/safety/items?${params.toString()}`)
+        .then(res => {
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return res.json();
+        })
+        .then(data => {
+            if (!safetyFilterLoaded) {
+                const selPkg = document.getElementById('safety-filter-project');
+                if (selPkg && data.projects) {
+                    data.projects.forEach(p => {
+                        const opt = document.createElement('option');
+                        opt.value = p;
+                        opt.innerText = p;
+                        selPkg.appendChild(opt);
+                    });
+                }
+                safetyFilterLoaded = true;
             }
+
+            // Always update type dropdown to match current filtered scope
             const selType = document.getElementById('safety-filter-type');
             if (selType && data.types) {
+                const currentVal = selType.value;
+                selType.innerHTML = '<option value="all">All Item Types</option>';
                 data.types.forEach(t => {
                     const opt = document.createElement('option');
                     opt.value = t;
                     opt.innerText = t;
+                    if (t === currentVal) opt.selected = true;
                     selType.appendChild(opt);
                 });
             }
-            safetyFilterLoaded = true;
-        }
 
-        renderSafetyData(data.items || []);
-        renderDisciplinePagination('safety-pagination', data.page, data.limit, data.total, 'loadDisciplineSafety');
-    } catch (err) {
-        console.error('Error loading safety items:', err);
-        if (grid) grid.innerHTML = `<div class="col-span-full py-8 text-center text-rose-400">Failed to load HSE data: ${escapeHtml(err.message)}</div>`;
-        if (tbody) tbody.innerHTML = `<tr><td colspan="8" class="text-center py-6 text-rose-400">Error: ${escapeHtml(err.message)}</td></tr>`;
-    }
+            renderSafetyData(data.items || []);
+            renderDisciplinePagination('safety-pagination', data.page, data.limit, data.total, 'loadDisciplineSafety');
+        })
+        .catch(err => {
+            console.error('Error loading safety items:', err);
+            if (grid) grid.innerHTML = `<div class="col-span-full py-8 text-center text-rose-400">Failed to load HSE data: ${escapeHtml(err.message)}</div>`;
+            if (tbody) tbody.innerHTML = `<tr><td colspan="8" class="text-center py-6 text-rose-400">Error: ${escapeHtml(err.message)}</td></tr>`;
+        });
 }
 window.loadDisciplineSafety = loadDisciplineSafety;
 
@@ -6950,7 +7740,7 @@ function renderSafetyData(items) {
     const tbody = document.getElementById('safety-table-tbody');
 
     if (!items || items.length === 0) {
-        if (grid) grid.innerHTML = `<div class="col-span-full py-12 text-center text-slate-500 font-medium">No HSE &amp; Safety records match current filters.</div>`;
+        if (grid) grid.innerHTML = `<div class="col-span-full py-12 text-center text-slate-500 font-medium">No HSE, Near Miss, or MOM records match current filters.</div>`;
         if (tbody) tbody.innerHTML = `<tr><td colspan="8" class="text-center py-10 text-slate-500">No records found</td></tr>`;
         return;
     }
@@ -6968,7 +7758,34 @@ function renderSafetyData(items) {
             statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-500/10 text-amber-400 border border-amber-500/30">${escapeHtml(item.status || 'Active')}</span>`;
         }
 
-        const typeColor = (item.mail_type || '').includes('Remedial') ? 'text-emerald-400' : ((item.mail_type || '').includes('Closure') ? 'text-blue-400' : 'text-amber-400');
+        const tLower = (item.mail_type || '').toLowerCase();
+        let typeColor = 'text-amber-400';
+        let typeIcon = 'shield';
+        let typeBadge = '';
+
+        if (tLower.includes('near miss')) {
+            typeColor = 'text-rose-400';
+            typeIcon = 'alert-octagon';
+            typeBadge = `<span class="px-1.5 py-0.5 rounded text-[10px] font-black bg-rose-500/20 text-rose-300 border border-rose-500/40">Near Miss</span>`;
+        } else if (tLower.includes('incident') || tLower.includes('stop work') || tLower.includes('accident')) {
+            typeColor = 'text-red-400';
+            typeIcon = 'alert-triangle';
+            typeBadge = `<span class="px-1.5 py-0.5 rounded text-[10px] font-black bg-red-600/20 text-red-300 border border-red-500/40">Incident</span>`;
+        } else if (tLower.includes('meeting')) {
+            typeColor = 'text-indigo-400';
+            typeIcon = 'users';
+            typeBadge = `<span class="px-1.5 py-0.5 rounded text-[10px] font-black bg-indigo-500/20 text-indigo-300 border border-indigo-500/40">MOM</span>`;
+        } else if (tLower.includes('remedial')) {
+            typeColor = 'text-emerald-400';
+            typeIcon = 'clock';
+        } else if (tLower.includes('closure')) {
+            typeColor = 'text-sky-400';
+            typeIcon = 'check-circle-2';
+        }
+
+        const sourceBadge = item.source_type === 'Document'
+            ? `<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-indigo-950 text-indigo-300 border border-indigo-500/30">MOM Doc</span>`
+            : `<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-slate-800 text-slate-300 border border-slate-700">Mail</span>`;
 
         cardsHtml += `
             <div class="bg-slate-900 rounded-2xl border border-slate-800 hover:border-emerald-500/40 p-5 flex flex-col justify-between transition-all duration-200 hover:shadow-xl hover:shadow-emerald-500/5 group">
@@ -6978,6 +7795,7 @@ function renderSafetyData(items) {
                             ${escapeHtml(item.mail_no)}
                         </span>
                         <div class="flex items-center gap-1.5">
+                            ${sourceBadge}
                             <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-300 border border-slate-700">
                                 ${escapeHtml(item.project)}
                             </span>
@@ -6986,66 +7804,76 @@ function renderSafetyData(items) {
                     </div>
 
                     <div class="text-[11px] font-bold ${typeColor} mb-1 flex items-center gap-1.5">
-                        <i data-lucide="shield" class="w-3.5 h-3.5 flex-shrink-0"></i>
+                        <i data-lucide="${typeIcon}" class="w-3.5 h-3.5 flex-shrink-0"></i>
                         <span>${escapeHtml(item.mail_type)}</span>
+                        ${typeBadge}
                     </div>
 
                     <h4 class="text-sm font-bold text-white group-hover:text-emerald-300 transition mb-3 leading-snug line-clamp-2">
                         ${escapeHtml(item.subject || 'No subject')}
                     </h4>
 
-                    <div class="space-y-1.5 p-3 rounded-xl bg-slate-950/70 border border-slate-800/80 mb-3 text-xs">
-                        <div class="flex items-center justify-between text-slate-400">
-                            <span class="text-[11px]">From Org:</span>
-                            <span class="text-slate-200 font-medium truncate max-w-[180px]">${escapeHtml(item.from_org)}</span>
+                    <div class="space-y-1.5 text-xs text-slate-400 border-t border-slate-800/80 pt-3">
+                        <div class="flex items-center justify-between">
+                            <span class="text-slate-500">From / Origin:</span>
+                            <span class="font-medium text-slate-300 truncate max-w-[160px]" title="${escapeHtml(item.from_org)}">${escapeHtml(item.from_org)}</span>
                         </div>
-                        <div class="flex items-center justify-between text-slate-400">
-                            <span class="text-[11px]">To Org:</span>
-                            <span class="text-slate-200 font-medium truncate max-w-[180px]">${escapeHtml(item.to_org)}</span>
+                        <div class="flex items-center justify-between">
+                            <span class="text-slate-500">To / Target:</span>
+                            <span class="font-medium text-slate-300 truncate max-w-[160px]" title="${escapeHtml(item.to_org)}">${escapeHtml(item.to_org)}</span>
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <span class="text-slate-500">Date:</span>
+                            <span class="font-mono text-slate-300">${escapeHtml(item.sent_date)}</span>
                         </div>
                     </div>
                 </div>
 
-                <div class="flex items-center justify-between pt-3 border-t border-slate-800/80 text-xs">
-                    <div class="flex items-center gap-1.5 text-slate-400">
-                        <i data-lucide="calendar" class="w-3.5 h-3.5 text-slate-500"></i>
-                        <span class="font-mono text-[11px]">${item.sent_date}</span>
-                    </div>
+                <div class="mt-4 pt-3 border-t border-slate-800/80 flex items-center justify-end">
                     ${item.aconex_url ? `
-                        <a href="${item.aconex_url}" target="_blank" class="px-3 py-1 rounded-lg bg-emerald-600/10 hover:bg-emerald-600 text-emerald-400 hover:text-white border border-emerald-500/20 text-[11px] font-bold flex items-center gap-1.5 transition">
-                            <span>Open Aconex</span>
-                            <i data-lucide="external-link" class="w-3 h-3"></i>
+                        <a href="${item.aconex_url}" target="_blank" class="text-xs font-bold text-emerald-400 hover:text-emerald-300 flex items-center gap-1 transition">
+                            <span>Open in Aconex</span>
+                            <i data-lucide="external-link" class="w-3.5 h-3.5"></i>
                         </a>
-                    ` : `
-                        <span class="text-[11px] text-slate-500">Aconex Indexed</span>
-                    `}
+                    ` : '<span class="text-[11px] text-slate-600 font-mono">Archive Record</span>'}
                 </div>
             </div>
         `;
 
         tableHtml += `
-            <tr class="hover:bg-slate-800/40 transition">
-                <td class="p-3.5 whitespace-nowrap">
-                    ${item.aconex_url ? `
-                        <a href="${item.aconex_url}" target="_blank" class="font-mono font-bold text-emerald-400 hover:underline inline-flex items-center gap-1">
-                            <span>${escapeHtml(item.mail_no)}</span>
-                            <i data-lucide="external-link" class="w-3 h-3 text-slate-500"></i>
-                        </a>
-                    ` : `<span class="font-mono font-bold text-emerald-400">${escapeHtml(item.mail_no)}</span>`}
+            <tr class="hover:bg-slate-800/50 transition border-b border-slate-800/60">
+                <td class="px-4 py-3 text-xs font-mono font-bold text-emerald-400">
+                    <div class="flex items-center gap-1.5">
+                        ${item.aconex_url ? `<a href="${item.aconex_url}" target="_blank" class="hover:underline flex items-center gap-1">${escapeHtml(item.mail_no)}<i data-lucide="external-link" class="w-3 h-3 text-slate-500"></i></a>` : escapeHtml(item.mail_no)}
+                    </div>
                 </td>
-                <td class="p-3.5 whitespace-nowrap font-medium text-slate-300">
-                    <span class="px-2 py-0.5 rounded text-[11px] bg-slate-950 border border-slate-800 ${typeColor}">${escapeHtml(item.mail_type)}</span>
+                <td class="px-4 py-3 text-xs font-medium ${typeColor}">
+                    <div class="flex items-center gap-1.5">
+                        <i data-lucide="${typeIcon}" class="w-3.5 h-3.5"></i>
+                        <span>${escapeHtml(item.mail_type)}</span>
+                        ${typeBadge}
+                    </div>
                 </td>
-                <td class="p-3.5 max-w-md">
-                    <span class="font-medium text-white hover:text-emerald-300 transition line-clamp-1">${escapeHtml(item.subject || '-')}</span>
+                <td class="px-4 py-3 text-xs text-white max-w-md truncate" title="${escapeHtml(item.subject)}">
+                    ${escapeHtml(item.subject)}
                 </td>
-                <td class="p-3.5 whitespace-nowrap">
-                    <span class="px-2 py-0.5 rounded text-[11px] bg-slate-950 text-slate-300 border border-slate-800 font-mono">${escapeHtml(item.project)}</span>
+                <td class="px-4 py-3 text-xs text-slate-300">
+                    <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-300 border border-slate-700">
+                        ${escapeHtml(item.project)}
+                    </span>
                 </td>
-                <td class="p-3.5 whitespace-nowrap text-slate-300 truncate max-w-[150px]">${escapeHtml(item.from_org)}</td>
-                <td class="p-3.5 whitespace-nowrap text-slate-300 truncate max-w-[150px]">${escapeHtml(item.to_org)}</td>
-                <td class="p-3.5 text-center font-mono whitespace-nowrap text-slate-400">${item.sent_date}</td>
-                <td class="p-3.5 text-center whitespace-nowrap">${statusBadge}</td>
+                <td class="px-4 py-3 text-xs text-slate-300 truncate max-w-[140px]" title="${escapeHtml(item.from_org)}">
+                    ${escapeHtml(item.from_org)}
+                </td>
+                <td class="px-4 py-3 text-xs text-slate-300 truncate max-w-[140px]" title="${escapeHtml(item.to_org)}">
+                    ${escapeHtml(item.to_org)}
+                </td>
+                <td class="px-4 py-3 text-xs font-mono text-slate-400 text-center">
+                    ${escapeHtml(item.sent_date)}
+                </td>
+                <td class="px-4 py-3 text-center">
+                    ${statusBadge}
+                </td>
             </tr>
         `;
     });
@@ -7057,12 +7885,14 @@ function renderSafetyData(items) {
 
 function exportSafetyExcel() {
     const pkg = document.getElementById('safety-filter-project')?.value || 'all';
+    const category = document.getElementById('safety-filter-category')?.value || 'all';
     const type = document.getElementById('safety-filter-type')?.value || 'all';
     const status = document.getElementById('safety-filter-status')?.value || 'all';
     const search = document.getElementById('safety-search-input')?.value || '';
 
     const params = new URLSearchParams();
     if (pkg !== 'all') params.append('project', pkg);
+    if (category !== 'all') params.append('category', category);
     if (type !== 'all') params.append('item_type', type);
     if (status !== 'all') params.append('status', status);
     if (search.trim()) params.append('search', search.trim());
@@ -7071,7 +7901,6 @@ function exportSafetyExcel() {
 }
 window.exportSafetyExcel = exportSafetyExcel;
 
-// -----------------------------------------------------------------------------
 // 20.2 QA/QC & INSPECTIONS HUB
 // -----------------------------------------------------------------------------
 let qaqcCurrentPage = 1;
@@ -7754,9 +8583,1509 @@ function exportTechOfficeExcel() {
 }
 window.exportTechOfficeExcel = exportTechOfficeExcel;
 
+// -----------------------------------------------------------------------------
+// 20.5 CONTRACTUAL CORRESPONDENCE HUB
+// -----------------------------------------------------------------------------
+let contractualCurrentPage = 1;
+let contractualViewMode = 'grid';
+let contractualDebounceTimer = null;
+let contractualFilterLoaded = false;
+
+function setContractualViewMode(mode) {
+    contractualViewMode = mode;
+    const btnGrid = document.getElementById('btn-contractual-view-grid');
+    const btnTable = document.getElementById('btn-contractual-view-table');
+    const gridContainer = document.getElementById('contractual-grid-container');
+    const tableContainer = document.getElementById('contractual-table-container');
+
+    if (mode === 'grid') {
+        if (btnGrid) btnGrid.className = 'px-2.5 py-1 rounded-lg text-xs font-bold transition flex items-center gap-1.5 bg-slate-800 text-white shadow-sm cursor-pointer';
+        if (btnTable) btnTable.className = 'px-2.5 py-1 rounded-lg text-xs font-semibold text-slate-400 hover:text-white transition flex items-center gap-1.5 cursor-pointer';
+        if (gridContainer) gridContainer.classList.remove('hidden');
+        if (tableContainer) tableContainer.classList.add('hidden');
+    } else {
+        if (btnGrid) btnGrid.className = 'px-2.5 py-1 rounded-lg text-xs font-semibold text-slate-400 hover:text-white transition flex items-center gap-1.5 cursor-pointer';
+        if (btnTable) btnTable.className = 'px-2.5 py-1 rounded-lg text-xs font-bold transition flex items-center gap-1.5 bg-slate-800 text-white shadow-sm cursor-pointer';
+        if (gridContainer) gridContainer.classList.add('hidden');
+        if (tableContainer) tableContainer.classList.remove('hidden');
+    }
+}
+window.setContractualViewMode = setContractualViewMode;
+
+function debounceContractualSearch() {
+    clearTimeout(contractualDebounceTimer);
+    contractualDebounceTimer = setTimeout(() => loadDisciplineContractual(1), 300);
+}
+window.debounceContractualSearch = debounceContractualSearch;
+
+async function setContractualCategoryFilter(cat) {
+    const elCat = document.getElementById('contractual-filter-category');
+    if (elCat) elCat.value = cat;
+    const elType = document.getElementById('contractual-filter-type');
+    if (elType) elType.value = 'all';
+    loadDisciplineContractual(1);
+}
+window.setContractualCategoryFilter = setContractualCategoryFilter;
+
+function loadDisciplineContractual(page = 1) {
+    contractualCurrentPage = page;
+    const grid = document.getElementById('contractual-grid-container');
+    const tbody = document.getElementById('contractual-table-tbody');
+
+    if (grid && contractualViewMode === 'grid') {
+        grid.innerHTML = `<div class="col-span-full py-16 text-center text-slate-400 flex items-center justify-center gap-2"><i data-lucide="loader" class="w-5 h-5 animate-spin text-blue-400"></i><span>Loading Contractual Correspondence...</span></div>`;
+    }
+    if (tbody && contractualViewMode === 'table') {
+        tbody.innerHTML = `<tr><td colspan="8" class="text-center py-10 text-slate-400"><div class="flex items-center justify-center gap-2"><i data-lucide="loader" class="w-4 h-4 animate-spin text-blue-400"></i><span>Loading correspondence records...</span></div></td></tr>`;
+    }
+    if (window.lucide) lucide.createIcons();
+
+    if (page === 1) {
+        fetch('/api/disciplines/contractual/stats')
+            .then(r => r.json())
+            .then(stats => {
+                const setEl = (id, val) => { const el = document.getElementById(id); if (el) el.innerText = (val || 0).toLocaleString(); };
+                setEl('stat-contractual-total', stats.total_correspondence);
+                setEl('stat-contractual-letters', stats.letters);
+                setEl('stat-contractual-general', stats.general_correspondence);
+                setEl('stat-contractual-instructions', stats.instructions);
+                setEl('stat-contractual-pending', stats.pending_action);
+                setEl('stat-contractual-overdue', stats.overdue);
+                const badge = document.getElementById('badge-contractual-total-count');
+                if (badge && stats.total_correspondence) badge.innerText = `${(stats.total_correspondence / 1000).toFixed(1)}k Items`;
+            })
+            .catch(err => console.error('Failed to load contractual stats:', err));
+    }
+
+    const pkg = document.getElementById('contractual-filter-project')?.value || 'all';
+    const category = document.getElementById('contractual-filter-category')?.value || 'all';
+    const type = document.getElementById('contractual-filter-type')?.value || 'all';
+    const status = document.getElementById('contractual-filter-status')?.value || 'all';
+    const search = document.getElementById('contractual-search-input')?.value || '';
+
+    const params = new URLSearchParams({ page: contractualCurrentPage, limit: 30 });
+    if (pkg !== 'all') params.append('project', pkg);
+    if (category !== 'all') params.append('category', category);
+    if (type !== 'all') params.append('item_type', type);
+    if (status !== 'all') params.append('status', status);
+    if (search.trim()) params.append('search', search.trim());
+
+    fetch(`/api/disciplines/contractual/items?${params.toString()}`)
+        .then(res => {
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return res.json();
+        })
+        .then(data => {
+            if (!contractualFilterLoaded) {
+                const selPkg = document.getElementById('contractual-filter-project');
+                if (selPkg && data.projects) {
+                    data.projects.forEach(p => {
+                        const opt = document.createElement('option');
+                        opt.value = p;
+                        opt.innerText = p;
+                        selPkg.appendChild(opt);
+                    });
+                }
+                contractualFilterLoaded = true;
+            }
+
+            const selType = document.getElementById('contractual-filter-type');
+            if (selType && data.types) {
+                const currentVal = selType.value;
+                selType.innerHTML = '<option value="all">All Types</option>';
+                data.types.forEach(t => {
+                    const opt = document.createElement('option');
+                    opt.value = t;
+                    opt.innerText = t;
+                    if (t === currentVal) opt.selected = true;
+                    selType.appendChild(opt);
+                });
+            }
+
+            renderContractualData(data.items || []);
+            renderDisciplinePagination('contractual-pagination', data.page, data.limit, data.total, 'loadDisciplineContractual');
+        })
+        .catch(err => {
+            console.error('Error loading contractual items:', err);
+            if (grid) grid.innerHTML = `<div class="col-span-full py-8 text-center text-rose-400">Failed to load Contractual data: ${escapeHtml(err.message)}</div>`;
+            if (tbody) tbody.innerHTML = `<tr><td colspan="8" class="text-center py-6 text-rose-400">Error: ${escapeHtml(err.message)}</td></tr>`;
+        });
+}
+window.loadDisciplineContractual = loadDisciplineContractual;
+
+function renderContractualData(items) {
+    const grid = document.getElementById('contractual-grid-container');
+    const tbody = document.getElementById('contractual-table-tbody');
+
+    if (!items || items.length === 0) {
+        if (grid) grid.innerHTML = `<div class="col-span-full py-12 text-center text-slate-500 font-medium">No Contractual Correspondence matches current filters.</div>`;
+        if (tbody) tbody.innerHTML = `<tr><td colspan="8" class="text-center py-10 text-slate-500">No records found</td></tr>`;
+        return;
+    }
+
+    let cardsHtml = '';
+    let tableHtml = '';
+
+    items.forEach(item => {
+        let statusBadge = '';
+        if (item.is_overdue) {
+            statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-rose-500/10 text-rose-400 border border-rose-500/30">OVERDUE</span>`;
+        } else if ((item.status || '').toLowerCase().includes('close') || (item.status || '').toLowerCase().includes('accept') || (item.status || '').toLowerCase().includes('registered')) {
+            statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-blue-500/10 text-blue-400 border border-blue-500/30">${escapeHtml(item.status)}</span>`;
+        } else {
+            statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-500/10 text-amber-400 border border-amber-500/30">${escapeHtml(item.status || 'Active')}</span>`;
+        }
+
+        const tLower = (item.item_type || '').toLowerCase();
+        let typeBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-300 border border-slate-700">${escapeHtml(item.item_type)}</span>`;
+        if (tLower.includes('formal letter') || tLower === 'letter') {
+            typeBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-sky-500/20 text-sky-300 border border-sky-500/30">Formal Letter</span>`;
+        } else if (tLower.includes('instruction') || tLower.includes('warning')) {
+            typeBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">Instruction / Notice</span>`;
+        } else if (tLower.includes('general correspondence')) {
+            typeBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">General Corr</span>`;
+        }
+
+        cardsHtml += `
+            <div class="bg-slate-900 rounded-2xl border border-slate-800 hover:border-blue-500/40 p-5 flex flex-col justify-between transition-all duration-200 hover:shadow-xl hover:shadow-blue-500/5 group">
+                <div>
+                    <div class="flex items-center justify-between gap-2 mb-3">
+                        <span class="text-xs font-mono font-bold text-blue-400 bg-slate-950 px-2 py-0.5 rounded border border-slate-800 truncate max-w-[200px]">
+                            ${escapeHtml(item.item_no)}
+                        </span>
+                        <div class="flex items-center gap-1.5 flex-shrink-0">
+                            <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-950 text-slate-400 border border-slate-800">${escapeHtml(item.source_type || 'Mail')}</span>
+                            ${statusBadge}
+                        </div>
+                    </div>
+
+                    <div class="flex items-center gap-2 mb-2">
+                        ${typeBadge}
+                    </div>
+
+                    <h4 class="text-sm font-bold text-white group-hover:text-blue-300 transition mb-3 leading-snug line-clamp-2">
+                        ${escapeHtml(item.title || 'Untitled Correspondence')}
+                    </h4>
+
+                    <div class="space-y-1.5 p-3 rounded-xl bg-slate-950/70 border border-slate-800/80 mb-3 text-xs">
+                        <div class="flex items-center justify-between text-slate-400">
+                            <span class="text-[11px]">Package:</span>
+                            <span class="text-slate-200 font-semibold font-mono truncate max-w-[180px]">${escapeHtml(item.project || 'General')}</span>
+                        </div>
+                        <div class="flex items-center justify-between text-slate-400">
+                            <span class="text-[11px]">From / To:</span>
+                            <span class="text-slate-300 font-medium truncate max-w-[180px]">${escapeHtml(item.from_org || '-')} &rarr; ${escapeHtml(item.to_org || '-')}</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="flex items-center justify-between pt-3 border-t border-slate-800/80 text-xs">
+                    <div class="flex items-center gap-1.5 text-slate-400">
+                        <i data-lucide="calendar" class="w-3.5 h-3.5 text-slate-500"></i>
+                        <span class="font-mono text-[11px]">${item.item_date || '-'}</span>
+                    </div>
+                    ${item.aconex_url ? `
+                        <a href="${item.aconex_url}" target="_blank" class="px-3 py-1 rounded-lg bg-blue-600/10 hover:bg-blue-600 text-blue-400 hover:text-white border border-blue-500/20 text-[11px] font-bold flex items-center gap-1.5 transition">
+                            <span>Open in Aconex</span>
+                            <i data-lucide="external-link" class="w-3 h-3"></i>
+                        </a>
+                    ` : `
+                        <span class="text-[11px] text-slate-500 font-mono">Aconex Item</span>
+                    `}
+                </div>
+            </div>
+        `;
+
+        tableHtml += `
+            <tr class="hover:bg-slate-800/40 transition">
+                <td class="p-3.5 whitespace-nowrap">
+                    ${item.aconex_url ? `
+                        <a href="${item.aconex_url}" target="_blank" class="font-mono font-bold text-blue-400 hover:underline inline-flex items-center gap-1">
+                            <span>${escapeHtml(item.item_no)}</span>
+                            <i data-lucide="external-link" class="w-3 h-3 text-slate-500"></i>
+                        </a>
+                    ` : `<span class="font-mono font-bold text-blue-400">${escapeHtml(item.item_no)}</span>`}
+                </td>
+                <td class="p-3.5 whitespace-nowrap">${typeBadge}</td>
+                <td class="p-3.5 max-w-xs">
+                    <span class="font-medium text-white hover:text-blue-300 transition line-clamp-1">${escapeHtml(item.title || '-')}</span>
+                </td>
+                <td class="p-3.5 whitespace-nowrap">
+                    <span class="px-2 py-0.5 rounded text-[11px] bg-slate-950 text-slate-300 border border-slate-800 font-mono">${escapeHtml(item.project || '-')}</span>
+                </td>
+                <td class="p-3.5 text-slate-300 text-xs whitespace-nowrap truncate max-w-[130px]">${escapeHtml(item.from_org || '-')}</td>
+                <td class="p-3.5 text-slate-300 text-xs whitespace-nowrap truncate max-w-[130px]">${escapeHtml(item.to_org || '-')}</td>
+                <td class="p-3.5 text-center font-mono whitespace-nowrap text-slate-400 text-xs">${item.item_date || '-'}</td>
+                <td class="p-3.5 text-center whitespace-nowrap">${statusBadge}</td>
+            </tr>
+        `;
+    });
+
+    if (grid) grid.innerHTML = cardsHtml;
+    if (tbody) tbody.innerHTML = tableHtml;
+    if (window.lucide) lucide.createIcons();
+}
+
+function exportContractualExcel() {
+    const pkg = document.getElementById('contractual-filter-project')?.value || 'all';
+    const category = document.getElementById('contractual-filter-category')?.value || 'all';
+    const type = document.getElementById('contractual-filter-type')?.value || 'all';
+    const status = document.getElementById('contractual-filter-status')?.value || 'all';
+    const search = document.getElementById('contractual-search-input')?.value || '';
+
+    const params = new URLSearchParams();
+    if (pkg !== 'all') params.append('project', pkg);
+    if (category !== 'all') params.append('category', category);
+    if (type !== 'all') params.append('item_type', type);
+    if (status !== 'all') params.append('status', status);
+    if (search.trim()) params.append('search', search.trim());
+
+    window.location.href = `/api/disciplines/contractual/export?${params.toString()}`;
+}
+window.exportContractualExcel = exportContractualExcel;
+
+
+// -----------------------------------------------------------------------------
+// 20.6 COMMERCIAL & CONTROLS HUB
+// -----------------------------------------------------------------------------
+let commercialCurrentPage = 1;
+let commercialViewMode = 'grid';
+let commercialDebounceTimer = null;
+let commercialFilterLoaded = false;
+
+function setCommercialViewMode(mode) {
+    commercialViewMode = mode;
+    const btnGrid = document.getElementById('btn-commercial-view-grid');
+    const btnTable = document.getElementById('btn-commercial-view-table');
+    const gridContainer = document.getElementById('commercial-grid-container');
+    const tableContainer = document.getElementById('commercial-table-container');
+
+    if (mode === 'grid') {
+        if (btnGrid) btnGrid.className = 'px-2.5 py-1 rounded-lg text-xs font-bold transition flex items-center gap-1.5 bg-slate-800 text-white shadow-sm cursor-pointer';
+        if (btnTable) btnTable.className = 'px-2.5 py-1 rounded-lg text-xs font-semibold text-slate-400 hover:text-white transition flex items-center gap-1.5 cursor-pointer';
+        if (gridContainer) gridContainer.classList.remove('hidden');
+        if (tableContainer) tableContainer.classList.add('hidden');
+    } else {
+        if (btnGrid) btnGrid.className = 'px-2.5 py-1 rounded-lg text-xs font-semibold text-slate-400 hover:text-white transition flex items-center gap-1.5 cursor-pointer';
+        if (btnTable) btnTable.className = 'px-2.5 py-1 rounded-lg text-xs font-bold transition flex items-center gap-1.5 bg-slate-800 text-white shadow-sm cursor-pointer';
+        if (gridContainer) gridContainer.classList.add('hidden');
+        if (tableContainer) tableContainer.classList.remove('hidden');
+    }
+}
+window.setCommercialViewMode = setCommercialViewMode;
+
+function debounceCommercialSearch() {
+    clearTimeout(commercialDebounceTimer);
+    commercialDebounceTimer = setTimeout(() => loadDisciplineCommercial(1), 300);
+}
+window.debounceCommercialSearch = debounceCommercialSearch;
+
+async function setCommercialCategoryFilter(cat) {
+    const elCat = document.getElementById('commercial-filter-category');
+    if (elCat) elCat.value = cat;
+    const elType = document.getElementById('commercial-filter-type');
+    if (elType) elType.value = 'all';
+    loadDisciplineCommercial(1);
+}
+window.setCommercialCategoryFilter = setCommercialCategoryFilter;
+
+function loadDisciplineCommercial(page = 1) {
+    commercialCurrentPage = page;
+    const grid = document.getElementById('commercial-grid-container');
+    const tbody = document.getElementById('commercial-table-tbody');
+
+    if (grid && commercialViewMode === 'grid') {
+        grid.innerHTML = `<div class="col-span-full py-16 text-center text-slate-400 flex items-center justify-center gap-2"><i data-lucide="loader" class="w-5 h-5 animate-spin text-emerald-400"></i><span>Loading Commercial &amp; Controls records...</span></div>`;
+    }
+    if (tbody && commercialViewMode === 'table') {
+        tbody.innerHTML = `<tr><td colspan="8" class="text-center py-10 text-slate-400"><div class="flex items-center justify-center gap-2"><i data-lucide="loader" class="w-4 h-4 animate-spin text-emerald-400"></i><span>Loading commercial instruments...</span></div></td></tr>`;
+    }
+    if (window.lucide) lucide.createIcons();
+
+    if (page === 1) {
+        fetch('/api/disciplines/commercial/stats')
+            .then(r => r.json())
+            .then(stats => {
+                const setEl = (id, val) => { const el = document.getElementById(id); if (el) el.innerText = (val || 0).toLocaleString(); };
+                setEl('stat-commercial-total', stats.total_commercial);
+                setEl('stat-commercial-boqs', stats.boqs);
+                setEl('stat-commercial-payments', stats.payment_apps_invoices);
+                setEl('stat-commercial-variations', stats.variation_orders_claims);
+                setEl('stat-commercial-proposals', stats.proposals_tenders);
+                setEl('stat-commercial-bonds', stats.bonds_contracts_costs);
+                const badge = document.getElementById('badge-commercial-total-count');
+                if (badge && stats.total_commercial) badge.innerText = `${(stats.total_commercial / 1000).toFixed(1)}k Items`;
+            })
+            .catch(err => console.error('Failed to load commercial stats:', err));
+    }
+
+    const pkg = document.getElementById('commercial-filter-project')?.value || 'all';
+    const category = document.getElementById('commercial-filter-category')?.value || 'all';
+    const type = document.getElementById('commercial-filter-type')?.value || 'all';
+    const status = document.getElementById('commercial-filter-status')?.value || 'all';
+    const search = document.getElementById('commercial-search-input')?.value || '';
+
+    const params = new URLSearchParams({ page: commercialCurrentPage, limit: 30 });
+    if (pkg !== 'all') params.append('project', pkg);
+    if (category !== 'all') params.append('category', category);
+    if (type !== 'all') params.append('item_type', type);
+    if (status !== 'all') params.append('status', status);
+    if (search.trim()) params.append('search', search.trim());
+
+    fetch(`/api/disciplines/commercial/items?${params.toString()}`)
+        .then(res => {
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return res.json();
+        })
+        .then(data => {
+            if (!commercialFilterLoaded) {
+                const selPkg = document.getElementById('commercial-filter-project');
+                if (selPkg && data.projects) {
+                    data.projects.forEach(p => {
+                        const opt = document.createElement('option');
+                        opt.value = p;
+                        opt.innerText = p;
+                        selPkg.appendChild(opt);
+                    });
+                }
+                commercialFilterLoaded = true;
+            }
+
+            const selType = document.getElementById('commercial-filter-type');
+            if (selType && data.types) {
+                const currentVal = selType.value;
+                selType.innerHTML = '<option value="all">All Types</option>';
+                data.types.forEach(t => {
+                    const opt = document.createElement('option');
+                    opt.value = t;
+                    opt.innerText = t;
+                    if (t === currentVal) opt.selected = true;
+                    selType.appendChild(opt);
+                });
+            }
+
+            renderCommercialData(data.items || []);
+            renderDisciplinePagination('commercial-pagination', data.page, data.limit, data.total, 'loadDisciplineCommercial');
+        })
+        .catch(err => {
+            console.error('Error loading commercial items:', err);
+            if (grid) grid.innerHTML = `<div class="col-span-full py-8 text-center text-rose-400">Failed to load Commercial data: ${escapeHtml(err.message)}</div>`;
+            if (tbody) tbody.innerHTML = `<tr><td colspan="8" class="text-center py-6 text-rose-400">Error: ${escapeHtml(err.message)}</td></tr>`;
+        });
+}
+window.loadDisciplineCommercial = loadDisciplineCommercial;
+
+function renderCommercialData(items) {
+    const grid = document.getElementById('commercial-grid-container');
+    const tbody = document.getElementById('commercial-table-tbody');
+
+    if (!items || items.length === 0) {
+        if (grid) grid.innerHTML = `<div class="col-span-full py-12 text-center text-slate-500 font-medium">No Commercial &amp; Controls records match current filters.</div>`;
+        if (tbody) tbody.innerHTML = `<tr><td colspan="8" class="text-center py-10 text-slate-500">No records found</td></tr>`;
+        return;
+    }
+
+    let cardsHtml = '';
+    let tableHtml = '';
+
+    items.forEach(item => {
+        let statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">${escapeHtml(item.status || 'Active')}</span>`;
+
+        const tLower = (item.item_type || '').toLowerCase();
+        let typeBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-300 border border-slate-700">${escapeHtml(item.item_type)}</span>`;
+        if (tLower.includes('bill of quantities') || tLower.includes('boq')) {
+            typeBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-teal-500/20 text-teal-300 border border-teal-500/30">BOQ</span>`;
+        } else if (tLower.includes('invoice') || tLower.includes('payment')) {
+            typeBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">Payment / Invoice</span>`;
+        } else if (tLower.includes('variation') || tLower.includes('claim')) {
+            typeBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">VO / Claim</span>`;
+        } else if (tLower.includes('proposal') || tLower.includes('tender')) {
+            typeBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-sky-500/20 text-sky-300 border border-sky-500/30">Proposal / Tender</span>`;
+        } else if (tLower.includes('insurance') || tLower.includes('bond') || tLower.includes('cost')) {
+            typeBadge = `<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30">Bond / Cost</span>`;
+        }
+
+        cardsHtml += `
+            <div class="bg-slate-900 rounded-2xl border border-slate-800 hover:border-emerald-500/40 p-5 flex flex-col justify-between transition-all duration-200 hover:shadow-xl hover:shadow-emerald-500/5 group">
+                <div>
+                    <div class="flex items-center justify-between gap-2 mb-3">
+                        <span class="text-xs font-mono font-bold text-emerald-400 bg-slate-950 px-2 py-0.5 rounded border border-slate-800 truncate max-w-[200px]">
+                            ${escapeHtml(item.item_no)}
+                        </span>
+                        <div class="flex items-center gap-1.5 flex-shrink-0">
+                            <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-950 text-slate-400 border border-slate-800">${escapeHtml(item.source_type || 'Document')}</span>
+                            ${statusBadge}
+                        </div>
+                    </div>
+
+                    <div class="flex items-center gap-2 mb-2">
+                        ${typeBadge}
+                    </div>
+
+                    <h4 class="text-sm font-bold text-white group-hover:text-emerald-300 transition mb-3 leading-snug line-clamp-2">
+                        ${escapeHtml(item.title || 'Untitled Commercial Item')}
+                    </h4>
+
+                    <div class="space-y-1.5 p-3 rounded-xl bg-slate-950/70 border border-slate-800/80 mb-3 text-xs">
+                        <div class="flex items-center justify-between text-slate-400">
+                            <span class="text-[11px]">Package:</span>
+                            <span class="text-slate-200 font-semibold font-mono truncate max-w-[180px]">${escapeHtml(item.project || 'General')}</span>
+                        </div>
+                        <div class="flex items-center justify-between text-slate-400">
+                            <span class="text-[11px]">Discipline / Author:</span>
+                            <span class="text-slate-300 font-medium truncate max-w-[180px]">${escapeHtml(item.from_org || '-')}</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="flex items-center justify-between pt-3 border-t border-slate-800/80 text-xs">
+                    <div class="flex items-center gap-1.5 text-slate-400">
+                        <i data-lucide="calendar" class="w-3.5 h-3.5 text-slate-500"></i>
+                        <span class="font-mono text-[11px]">${item.item_date || '-'}</span>
+                    </div>
+                    ${item.aconex_url ? `
+                        <a href="${item.aconex_url}" target="_blank" class="px-3 py-1 rounded-lg bg-emerald-600/10 hover:bg-emerald-600 text-emerald-400 hover:text-white border border-emerald-500/20 text-[11px] font-bold flex items-center gap-1.5 transition">
+                            <span>Open in Aconex</span>
+                            <i data-lucide="external-link" class="w-3 h-3"></i>
+                        </a>
+                    ` : `
+                        <span class="text-[11px] text-slate-500 font-mono">Aconex Document</span>
+                    `}
+                </div>
+            </div>
+        `;
+
+        tableHtml += `
+            <tr class="hover:bg-slate-800/40 transition">
+                <td class="p-3.5 whitespace-nowrap">
+                    ${item.aconex_url ? `
+                        <a href="${item.aconex_url}" target="_blank" class="font-mono font-bold text-emerald-400 hover:underline inline-flex items-center gap-1">
+                            <span>${escapeHtml(item.item_no)}</span>
+                            <i data-lucide="external-link" class="w-3 h-3 text-slate-500"></i>
+                        </a>
+                    ` : `<span class="font-mono font-bold text-emerald-400">${escapeHtml(item.item_no)}</span>`}
+                </td>
+                <td class="p-3.5 whitespace-nowrap">${typeBadge}</td>
+                <td class="p-3.5 max-w-xs">
+                    <span class="font-medium text-white hover:text-emerald-300 transition line-clamp-1">${escapeHtml(item.title || '-')}</span>
+                </td>
+                <td class="p-3.5 whitespace-nowrap">
+                    <span class="px-2 py-0.5 rounded text-[11px] bg-slate-950 text-slate-300 border border-slate-800 font-mono">${escapeHtml(item.project || '-')}</span>
+                </td>
+                <td class="p-3.5 text-slate-300 text-xs whitespace-nowrap truncate max-w-[130px]">${escapeHtml(item.from_org || '-')}</td>
+                <td class="p-3.5 text-center font-mono whitespace-nowrap text-slate-400 text-xs">${escapeHtml(item.to_org || '01')}</td>
+                <td class="p-3.5 text-center font-mono whitespace-nowrap text-slate-400 text-xs">${item.item_date || '-'}</td>
+                <td class="p-3.5 text-center whitespace-nowrap">${statusBadge}</td>
+            </tr>
+        `;
+    });
+
+    if (grid) grid.innerHTML = cardsHtml;
+    if (tbody) tbody.innerHTML = tableHtml;
+    if (window.lucide) lucide.createIcons();
+}
+
+function exportCommercialExcel() {
+    const pkg = document.getElementById('commercial-filter-project')?.value || 'all';
+    const category = document.getElementById('commercial-filter-category')?.value || 'all';
+    const type = document.getElementById('commercial-filter-type')?.value || 'all';
+    const status = document.getElementById('commercial-filter-status')?.value || 'all';
+    const search = document.getElementById('commercial-search-input')?.value || '';
+
+    const params = new URLSearchParams();
+    if (pkg !== 'all') params.append('project', pkg);
+    if (category !== 'all') params.append('category', category);
+    if (type !== 'all') params.append('item_type', type);
+    if (status !== 'all') params.append('status', status);
+    if (search.trim()) params.append('search', search.trim());
+
+    window.location.href = `/api/disciplines/commercial/export?${params.toString()}`;
+}
+window.exportCommercialExcel = exportCommercialExcel;
+
+
 // Attach clean DOMContentLoaded listener
 document.addEventListener('DOMContentLoaded', () => {
     initAppTheme();
 });
 
 
+
+
+// =============================================================================
+
+// ACONEX AUTONOMOUS PIPELINE & TASK SCHEDULER CONTROLS
+let syncPollTimer = null;
+
+// =========================================================================
+// ACONEX PIPELINE SYNC DELEGATES (Unified with Main Controller)
+// =========================================================================
+function loadSyncStatus() {
+    if (typeof window.loadSyncStatus === 'function') {
+        window.loadSyncStatus();
+    }
+}
+window.loadSyncStatus = loadSyncStatus;
+
+
+
+
+// =============================================================================
+// TAB 2: DAILY DELIVERABLES & ACTIVITY FEED (TODAY & YESTERDAY)
+// =============================================================================
+let feedCurrentTimeframe = 'today_yesterday';
+let feedFromDate = '';
+let feedToDate = '';
+let feedDiscipline = 'all';
+let feedStatus = 'all';
+let feedCurrentSource = 'all';
+let feedCurrentType = 'all';
+let feedCurrentProject = 'all';
+let feedCurrentSearch = '';
+let feedCurrentPage = 1;
+let feedLimit = 50;
+let feedSummaryData = null;
+let feedSearchTimeout = null;
+
+function changeFeedTimeframe(tf) {
+    feedCurrentTimeframe = tf;
+    feedFromDate = '';
+    feedToDate = '';
+    
+    // Clear custom date input fields
+    const fIn = document.getElementById('feed-from-date');
+    const tIn = document.getElementById('feed-to-date');
+    if (fIn) fIn.value = '';
+    if (tIn) tIn.value = '';
+
+    // Update active highlight across preset buttons
+    ['today', '7d', '14d', '30d', '60d', 'all'].forEach(k => {
+        const btn = document.getElementById(`feed-timeframe-btn-${k}`);
+        if (btn) {
+            if ((k === 'today' && tf === 'today_yesterday') || (k === tf)) {
+                btn.className = 'px-2.5 py-1.5 rounded-lg bg-amber-600 text-white shadow-sm transition cursor-pointer font-bold';
+            } else {
+                btn.className = 'px-2.5 py-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer';
+            }
+        }
+    });
+
+    feedSummaryData = null;
+    loadDailyFeed(1);
+}
+window.changeFeedTimeframe = changeFeedTimeframe;
+
+function applyCustomFeedDateRange() {
+    const fIn = document.getElementById('feed-from-date');
+    const tIn = document.getElementById('feed-to-date');
+    feedFromDate = (fIn?.value || '').trim();
+    feedToDate = (tIn?.value || '').trim();
+
+    if (!feedFromDate && !feedToDate) {
+        changeFeedTimeframe('today_yesterday');
+        return;
+    }
+
+    feedCurrentTimeframe = 'custom';
+    // Remove active highlight from all preset buttons
+    ['today', '7d', '14d', '30d', '60d', 'all'].forEach(k => {
+        const btn = document.getElementById(`feed-timeframe-btn-${k}`);
+        if (btn) {
+            btn.className = 'px-2.5 py-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer';
+        }
+    });
+
+    feedSummaryData = null;
+    loadDailyFeed(1);
+}
+window.applyCustomFeedDateRange = applyCustomFeedDateRange;
+
+function filterFeedByDiscipline(disc) {
+    feedDiscipline = disc || 'all';
+    loadDailyFeed(1);
+}
+window.filterFeedByDiscipline = filterFeedByDiscipline;
+
+function filterFeedByStatus(st) {
+    feedStatus = st || 'all';
+    loadDailyFeed(1);
+}
+window.filterFeedByStatus = filterFeedByStatus;
+
+async function loadDailyFeed(page = 1) {
+    feedCurrentPage = page;
+    const tbody = document.getElementById('feed-table-tbody');
+    if (tbody) {
+        tbody.innerHTML = `<tr><td colspan="9" class="text-center py-12 text-slate-400"><div class="flex items-center justify-center gap-2"><i data-lucide="loader" class="w-5 h-5 animate-spin text-amber-400"></i><span>Loading ${feedCurrentTimeframe === 'today_yesterday' ? 'Today & Yesterday' : (feedCurrentTimeframe === '7d' ? 'Last 7 Days' : 'Last 30 Days')} deliverables...</span></div></td></tr>`;
+        if (window.lucide) lucide.createIcons();
+    }
+
+    // Always fetch summary on page 1 or if not yet loaded
+    if (page === 1 || !feedSummaryData) {
+        try {
+            const sumParams = new URLSearchParams({ timeframe: feedCurrentTimeframe });
+            if (feedFromDate) sumParams.append('from_date', feedFromDate);
+            if (feedToDate) sumParams.append('to_date', feedToDate);
+            const sumRes = await fetch(`/api/feed/summary?${sumParams.toString()}`);
+            if (sumRes.ok) {
+                feedSummaryData = await sumRes.json();
+                renderFeedSummary(feedSummaryData);
+            }
+        } catch (e) {
+            console.error('Failed to load feed summary:', e);
+        }
+    }
+
+    // Fetch paginated items
+    const params = new URLSearchParams({
+        timeframe: feedCurrentTimeframe,
+        source: feedCurrentSource,
+        item_type: feedCurrentType,
+        project: feedCurrentProject,
+        page: feedCurrentPage,
+        limit: feedLimit
+    });
+    if (feedFromDate) params.append('from_date', feedFromDate);
+    if (feedToDate) params.append('to_date', feedToDate);
+    if (feedDiscipline && feedDiscipline !== 'all') params.append('discipline', feedDiscipline);
+    if (feedStatus && feedStatus !== 'all') params.append('status', feedStatus);
+    if (feedCurrentSearch.trim()) {
+        params.append('search', feedCurrentSearch.trim());
+    }
+
+    try {
+        const itemsRes = await fetch(`/api/feed/items?${params.toString()}`);
+        if (!itemsRes.ok) throw new Error(`HTTP ${itemsRes.status}`);
+        const data = await itemsRes.json();
+        renderFeedTable(data.items || []);
+        renderFeedPagination(data.page, data.limit, data.total);
+    } catch (err) {
+        console.error('Error loading feed items:', err);
+        if (tbody) {
+            tbody.innerHTML = `<tr><td colspan="9" class="text-center py-10 text-rose-400 font-semibold">Failed to load deliverables: ${escapeHtml(err.message)}</td></tr>`;
+        }
+    }
+}
+window.loadDailyFeed = loadDailyFeed;
+
+function renderFeedSummary(summary) {
+    if (!summary) return;
+
+    // 1. Update Tab 2 Sidebar Badge
+    const sideBadge = document.getElementById('badge-daily-feed-count');
+    if (sideBadge) {
+        sideBadge.innerText = `${(summary.total_items || 0).toLocaleString()} New`;
+    }
+
+    // 2. Update KPI / Source Legend Counts
+    const sc = summary.source_counts || {};
+    const setEl = (id, val) => { const el = document.getElementById(id); if (el) el.innerText = (val || 0).toLocaleString(); };
+    setEl('stat-feed-mail-count', sc.mail || 0);
+    setEl('stat-feed-doc-count', sc.doc || 0);
+    setEl('stat-feed-wf-count', sc.workflow || 0);
+    setEl('stat-feed-process-count', sc.process || 0);
+
+    // Highlight active source legend card if filtered
+    ['mail', 'doc', 'workflow', 'process'].forEach(s => {
+        const card = document.getElementById(`feed-legend-card-${s}`);
+        if (card) {
+            if (feedCurrentSource === s) {
+                card.classList.add('ring-2', 'ring-amber-500', 'bg-slate-900');
+            } else {
+                card.classList.remove('ring-2', 'ring-amber-500', 'bg-slate-900');
+            }
+        }
+    });
+
+    // 3. Render Active File Types Chips
+    renderFeedChips(summary.active_types || [], summary.total_items || 0);
+
+    // 4. Populate Project Filter Dropdown
+    const selProj = document.getElementById('feed-filter-project');
+    if (selProj) {
+        const currentVal = feedCurrentProject;
+        selProj.innerHTML = `<option value="all">All Packages (${(summary.total_items || 0).toLocaleString()} Deliverables)</option>`;
+        (summary.active_packages || []).forEach(pkg => {
+            const opt = document.createElement('option');
+            opt.value = pkg.project_id;
+            opt.innerText = `${pkg.project_id} (${(pkg.count || 0).toLocaleString()})`;
+            if (pkg.project_id === currentVal) opt.selected = true;
+            selProj.appendChild(opt);
+        });
+    }
+}
+
+function renderFeedChips(types, totalAll) {
+    const container = document.getElementById('feed-type-chips-container');
+    if (!container) return;
+
+    if (!types || types.length === 0) {
+        container.innerHTML = `<span class="text-xs text-slate-500 italic py-2">No deliverables recorded for this timeframe.</span>`;
+        return;
+    }
+
+    let html = '';
+    const isAllSelected = (feedCurrentType === 'all');
+    html += `
+        <button onclick="filterFeedByType('all')" class="px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${isAllSelected ? 'bg-amber-600 text-white shadow-md shadow-amber-600/30 ring-1 ring-amber-400' : 'bg-slate-950 text-slate-300 hover:bg-slate-800 border border-slate-700/80'}">
+            <span>All Types</span>
+            <span class="px-1.5 py-0.2 rounded-full text-[10px] ${isAllSelected ? 'bg-amber-800/80 text-amber-100' : 'bg-slate-800 text-slate-400'} font-mono">${(totalAll || 0).toLocaleString()}</span>
+        </button>
+    `;
+
+    types.forEach(t => {
+        const isSelected = (feedCurrentType === t.type);
+        let colorClasses = '';
+        if (t.source === 'mail') {
+            colorClasses = isSelected 
+                ? 'bg-sky-600 text-white shadow-md shadow-sky-600/30 ring-1 ring-sky-300' 
+                : 'bg-slate-950 text-sky-300 border border-sky-500/30 hover:bg-sky-950/50 hover:border-sky-400';
+        } else if (t.source === 'doc') {
+            colorClasses = isSelected 
+                ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/30 ring-1 ring-emerald-300' 
+                : 'bg-slate-950 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-950/50 hover:border-emerald-400';
+        } else if (t.source === 'workflow') {
+            colorClasses = isSelected 
+                ? 'bg-purple-600 text-white shadow-md shadow-purple-600/30 ring-1 ring-purple-300' 
+                : 'bg-slate-950 text-purple-300 border border-purple-500/30 hover:bg-purple-950/50 hover:border-purple-400';
+        } else {
+            colorClasses = isSelected 
+                ? 'bg-amber-600 text-white shadow-md shadow-amber-600/30 ring-1 ring-amber-300' 
+                : 'bg-slate-950 text-amber-300 border border-amber-500/30 hover:bg-amber-950/50 hover:border-amber-400';
+        }
+
+        html += `
+            <button onclick="filterFeedByType('${escapeHtml(t.type)}')" class="px-2.5 py-1.2 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer ${colorClasses}">
+                <span>${escapeHtml(t.label)}</span>
+                <span class="px-1.5 py-0.2 rounded-full text-[10px] bg-slate-900/80 font-mono font-bold">${(t.count || 0).toLocaleString()}</span>
+            </button>
+        `;
+    });
+
+    container.innerHTML = html;
+}
+
+function renderFeedTable(items) {
+    const tbody = document.getElementById('feed-table-tbody');
+    if (!tbody) return;
+
+    if (!items || items.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="9" class="text-center py-12 text-slate-500 font-medium">No deliverables found matching the current filters.</td></tr>`;
+        return;
+    }
+
+    let html = '';
+    items.forEach(it => {
+        // Exact Upload / Registered Date with Calendar Icon & relative tag badge
+        const exactDate = it.item_date ? String(it.item_date).substring(0, 10) : '-';
+        let relBadge = '';
+        if (it.relative_tag === 'Today') {
+            relBadge = `<span class="inline-flex items-center gap-1 px-1.5 py-0.2 rounded-full text-[9px] font-black bg-amber-500/20 text-amber-300 border border-amber-500/40"><span class="w-1 h-1 rounded-full bg-amber-400 animate-pulse"></span>Today</span>`;
+        } else if (it.relative_tag === 'Yesterday') {
+            relBadge = `<span class="inline-flex items-center gap-1 px-1.5 py-0.2 rounded-full text-[9px] font-semibold bg-slate-800 text-slate-300 border border-slate-700">Yesterday</span>`;
+        }
+        
+        const dateCellHtml = `
+            <div class="flex items-center gap-2">
+                <i data-lucide="calendar" class="w-3.5 h-3.5 text-amber-400/80 flex-shrink-0"></i>
+                <span class="font-mono font-bold text-slate-100 text-xs">${escapeHtml(exactDate)}</span>
+                ${relBadge}
+            </div>
+        `;
+
+        // Source badge
+        let srcBadge = '';
+        if (it.source === 'mail') {
+            srcBadge = `<span class="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold bg-sky-500/10 text-sky-400 border border-sky-500/30">Mail (Mail)</span>`;
+        } else if (it.source === 'doc') {
+            srcBadge = `<span class="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">Doc (Doc)</span>`;
+        } else if (it.source === 'workflow') {
+            srcBadge = `<span class="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold bg-purple-500/10 text-purple-400 border border-purple-500/30">WF (Workflow)</span>`;
+        } else {
+            srcBadge = `<span class="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/30">BIC (Process)</span>`;
+        }
+
+        // Status badge
+        let statusBadge = '';
+        const st = (it.status || '').toLowerCase();
+        if (st.includes('current') || st.includes('completed') || st.includes('registered') || st.includes('sent')) {
+            statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">${escapeHtml(it.status || 'Active')}</span>`;
+        } else if (st.includes('overdue') || st.includes('late')) {
+            statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-black bg-rose-500/20 text-rose-300 border border-rose-500/40">Overdue</span>`;
+        } else {
+            statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">${escapeHtml(it.status || 'Active')}</span>`;
+        }
+
+        const fullTypeLabel = `${it.item_type} ${it.source_label || ''}`;
+
+        // Ensure feedUrl uses robust resolvers and avoids broken trackingid query
+        let feedUrl = String(it.aconex_url || '');
+        if (!feedUrl || feedUrl === '#') {
+            if (it.source === 'mail') {
+                feedUrl = `/api/aconex/mail?mail_no=${encodeURIComponent(it.item_id)}`;
+            } else {
+                feedUrl = `/api/aconex/doc?doc_no=${encodeURIComponent(it.item_id)}`;
+            }
+        }
+
+        html += `
+            <tr class="hover:bg-slate-800/40 transition group">
+                <td class="py-3 px-4 whitespace-nowrap">${dateCellHtml}</td>
+                <td class="py-3 px-3 whitespace-nowrap">${srcBadge}</td>
+                <td class="py-3 px-4 font-semibold text-slate-200">${escapeHtml(fullTypeLabel)}</td>
+                <td class="py-3 px-4 font-mono font-bold text-amber-400 whitespace-nowrap">
+                    <a href="${escapeHtml(feedUrl || '#')}" target="_blank" class="hover:underline flex items-center gap-1" title="Open in Aconex">
+                        <span>${escapeHtml(it.item_id)}</span>
+                        <i data-lucide="external-link" class="w-3 h-3 opacity-0 group-hover:opacity-100 transition"></i>
+                    </a>
+                </td>
+                <td class="py-3 px-4 text-white font-medium max-w-[360px] truncate" title="${escapeHtml(it.title || '')}">
+                    ${escapeHtml(it.title || '-')}
+                </td>
+                <td class="py-3 px-4 whitespace-nowrap">
+                    <span class="px-2 py-0.5 rounded-md text-[11px] font-mono font-semibold bg-slate-950 text-slate-300 border border-slate-800">
+                        ${escapeHtml(it.project_id || 'General')}
+                    </span>
+                </td>
+                <td class="py-3 px-4 text-slate-300 text-[11px]">
+                    <div class="font-semibold text-white truncate max-w-[180px]">${escapeHtml(it.organization || '-')}</div>
+                    ${it.author ? `<div class="text-[10px] text-slate-400 truncate max-w-[180px]">${escapeHtml(it.author)}</div>` : ''}
+                </td>
+                <td class="py-3 px-3 whitespace-nowrap">${statusBadge}</td>
+                <td class="py-3 px-4 text-right whitespace-nowrap">
+                    <a href="${escapeHtml(feedUrl || '#')}" target="_blank" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 text-[11px] font-semibold inline-flex items-center gap-1 transition">
+                        <span>View</span>
+                        <i data-lucide="external-link" class="w-3 h-3"></i>
+                    </a>
+                </td>
+            </tr>
+        `;
+    });
+
+    tbody.innerHTML = html;
+    if (window.AntigravityTableEngine) {
+        AntigravityTableEngine.initTable('feed-table');
+        AntigravityTableEngine.applyColumnVisibility('feed-table');
+    }
+    if (window.lucide) lucide.createIcons();
+}
+
+function renderFeedPagination(page, limit, total) {
+    const rangeEl = document.getElementById('feed-showing-range');
+    const indicatorEl = document.getElementById('feed-page-indicator');
+    const btnPrev = document.getElementById('feed-btn-prev');
+    const btnNext = document.getElementById('feed-btn-next');
+
+    const rangeElTop = document.getElementById('feed-showing-range-top');
+    const indicatorElTop = document.getElementById('feed-page-indicator-top');
+    const btnPrevTop = document.getElementById('feed-btn-prev-top');
+    const btnNextTop = document.getElementById('feed-btn-next-top');
+
+    const totalPages = Math.ceil(total / limit) || 1;
+    const start = total === 0 ? 0 : (page - 1) * limit + 1;
+    const end = Math.min(page * limit, total);
+    const rangeText = `Showing ${start}-${end} of ${(total || 0).toLocaleString()} deliverables`;
+    const pageText = `Page ${page} of ${totalPages}`;
+
+    if (rangeEl) rangeEl.innerText = rangeText;
+    if (rangeElTop) rangeElTop.innerText = rangeText;
+
+    if (indicatorEl) indicatorEl.innerText = pageText;
+    if (indicatorElTop) indicatorElTop.innerText = pageText;
+
+    const isPrevDisabled = (page <= 1);
+    const isNextDisabled = (page >= totalPages);
+
+    if (btnPrev) btnPrev.disabled = isPrevDisabled;
+    if (btnPrevTop) btnPrevTop.disabled = isPrevDisabled;
+
+    if (btnNext) btnNext.disabled = isNextDisabled;
+    if (btnNextTop) btnNextTop.disabled = isNextDisabled;
+}
+
+function changeFeedPage(delta) {
+    const newPage = feedCurrentPage + delta;
+    if (newPage >= 1) {
+        loadDailyFeed(newPage);
+    }
+}
+window.changeFeedPage = changeFeedPage;
+
+function changeFeedLimit(newLimit) {
+    feedLimit = parseInt(newLimit, 10) || 50;
+    loadDailyFeed(1);
+}
+window.changeFeedLimit = changeFeedLimit;
+
+function changeFeedTimeframe(timeframe) {
+    if (feedCurrentTimeframe === timeframe) return;
+    feedCurrentTimeframe = timeframe;
+
+    const btnToday = document.getElementById('feed-timeframe-btn-today');
+    const btn7d = document.getElementById('feed-timeframe-btn-7d');
+    const btn30d = document.getElementById('feed-timeframe-btn-30d');
+
+    const activeCls = ['bg-amber-600', 'text-white', 'shadow-sm'];
+    const inactiveCls = ['text-slate-400', 'hover:text-white', 'hover:bg-slate-800'];
+
+    [btnToday, btn7d, btn30d].forEach(b => {
+        if (b) {
+            b.classList.remove(...activeCls);
+            b.classList.add(...inactiveCls);
+        }
+    });
+
+    if (timeframe === 'today_yesterday' && btnToday) {
+        btnToday.classList.remove(...inactiveCls);
+        btnToday.classList.add(...activeCls);
+    } else if (timeframe === '7d' && btn7d) {
+        btn7d.classList.remove(...inactiveCls);
+        btn7d.classList.add(...activeCls);
+    } else if (timeframe === '30d' && btn30d) {
+        btn30d.classList.remove(...inactiveCls);
+        btn30d.classList.add(...activeCls);
+    }
+
+    feedCurrentType = 'all';
+    feedSummaryData = null; // force reload summary
+    loadDailyFeed(1);
+}
+window.changeFeedTimeframe = changeFeedTimeframe;
+
+function filterFeedBySource(source) {
+    if (feedCurrentSource === source) {
+        feedCurrentSource = 'all';
+    } else {
+        feedCurrentSource = source;
+    }
+    const sel = document.getElementById('feed-filter-source');
+    if (sel) sel.value = feedCurrentSource;
+    loadDailyFeed(1);
+}
+window.filterFeedBySource = filterFeedBySource;
+
+function filterFeedBySourceDropdown(source) {
+    feedCurrentSource = source;
+    loadDailyFeed(1);
+}
+window.filterFeedBySourceDropdown = filterFeedBySourceDropdown;
+
+function filterFeedByType(typeName) {
+    feedCurrentType = typeName;
+    loadDailyFeed(1);
+}
+window.filterFeedByType = filterFeedByType;
+
+function clearFeedTypeFilter() {
+    feedCurrentType = 'all';
+    loadDailyFeed(1);
+}
+window.clearFeedTypeFilter = clearFeedTypeFilter;
+
+function filterFeedByProject(project) {
+    feedCurrentProject = project;
+    loadDailyFeed(1);
+}
+window.filterFeedByProject = filterFeedByProject;
+
+function debounceFeedSearch() {
+    clearTimeout(feedSearchTimeout);
+    feedSearchTimeout = setTimeout(() => {
+        const inp = document.getElementById('feed-search-input');
+        feedCurrentSearch = inp ? inp.value : '';
+        loadDailyFeed(1);
+    }, 300);
+}
+window.debounceFeedSearch = debounceFeedSearch;
+
+function resetAllFeedFilters() {
+    feedCurrentSource = 'all';
+    feedCurrentType = 'all';
+    feedCurrentProject = 'all';
+    feedCurrentSearch = '';
+
+    const selProj = document.getElementById('feed-filter-project');
+    const selSrc = document.getElementById('feed-filter-source');
+    const inpSearch = document.getElementById('feed-search-input');
+
+    if (selProj) selProj.value = 'all';
+    if (selSrc) selSrc.value = 'all';
+    if (inpSearch) inpSearch.value = '';
+
+    loadDailyFeed(1);
+}
+window.resetAllFeedFilters = resetAllFeedFilters;
+
+function exportDailyFeedExcel() {
+    const params = new URLSearchParams({
+        timeframe: feedCurrentTimeframe,
+        source: feedCurrentSource,
+        item_type: feedCurrentType,
+        project: feedCurrentProject
+    });
+    if (feedCurrentSearch.trim()) {
+        params.append('search', feedCurrentSearch.trim());
+    }
+    window.location.href = `/api/feed/export?${params.toString()}`;
+}
+window.exportDailyFeedExcel = exportDailyFeedExcel;
+
+
+
+// ============================================================================
+// CUSTOM FOLDER LOG SYNCHRONIZATION & DIRECTIONAL LETTERS LOG EXPORT
+// ============================================================================
+
+function exportLettersLogDirection(direction) {
+    const projectId = currentProjectContext || 'DP02';
+    const searchEl = document.getElementById('proj-letters-search');
+    const typeEl = document.getElementById('proj-letters-type');
+    const statusEl = document.getElementById('proj-letters-status');
+
+    const params = new URLSearchParams({
+        category: 'letters',
+        direction: direction || 'all'
+    });
+    if (searchEl && searchEl.value.trim()) params.append('search', searchEl.value.trim());
+    if (typeEl && typeEl.value) params.append('mail_type', typeEl.value);
+    if (statusEl && statusEl.value) params.append('status', statusEl.value);
+
+    const url = `/api/projects/${encodeURIComponent(projectId)}/export_filtered?${params.toString()}`;
+    window.location.href = url;
+}
+window.exportLettersLogDirection = exportLettersLogDirection;
+
+function openLogFolderSyncModal(mode = 'all') {
+    const modal = document.getElementById('modal-log-folder-sync');
+    if (!modal) return;
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+
+    const inputEl = document.getElementById('input-custom-sync-folder');
+    if (inputEl && !inputEl.value.trim()) {
+        inputEl.value = mode === 'letters'
+            ? 'C:\\Users\\bimst\\Downloads\\ACONEX\\Logs\\OneDrive_2_10-12-2026'
+            : 'C:\\Users\\bimst\\Downloads\\ACONEX\\Logs';
+    }
+    const statusBox = document.getElementById('custom-sync-status-box');
+    if (statusBox) {
+        statusBox.classList.add('hidden');
+        statusBox.innerHTML = '';
+    }
+    if (window.lucide) window.lucide.createIcons();
+}
+window.openLogFolderSyncModal = openLogFolderSyncModal;
+
+function openUploadRfiModal() {
+    openLogFolderSyncModal('rfis');
+}
+window.openUploadRfiModal = openUploadRfiModal;
+
+function closeLogFolderSyncModal() {
+    const modal = document.getElementById('modal-log-folder-sync');
+    if (!modal) return;
+    modal.classList.add('hidden');
+    modal.classList.remove('flex');
+}
+window.closeLogFolderSyncModal = closeLogFolderSyncModal;
+
+function renderSyncStatusBox(html, isError = false) {
+    const statusBox = document.getElementById('custom-sync-status-box');
+    if (!statusBox) return;
+    statusBox.classList.remove('hidden');
+    statusBox.className = `p-3.5 rounded-xl border text-xs font-mono space-y-1.5 max-h-60 overflow-y-auto ${
+        isError
+            ? 'bg-rose-950/60 border-rose-500/40 text-rose-200'
+            : 'bg-slate-950/90 border-emerald-500/40 text-slate-200'
+    }`;
+    statusBox.innerHTML = html;
+}
+
+async function executeCustomFolderSync(syncType = 'all') {
+    const inputEl = document.getElementById('input-custom-sync-folder');
+    const folderPath = inputEl && inputEl.value.trim()
+        ? inputEl.value.trim()
+        : 'C:\\Users\\bimst\\Downloads\\ACONEX\\Logs';
+
+    renderSyncStatusBox(`<div class="flex items-center gap-2 text-sky-400 font-bold"><span class="animate-spin inline-block w-3.5 h-3.5 border-2 border-sky-400 border-t-transparent rounded-full"></span> Synchronizing Excel Logs in: ${folderPath} ...</div>`);
+
+    try {
+        let endpoint = '/api/logs/sync_all';
+        if (syncType === 'rfis') endpoint = '/api/rfi_explore/sync_all';
+        else if (syncType === 'letters') endpoint = '/api/letters_explore/sync_all';
+
+        const res = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ folder_path: folderPath })
+        });
+        const data = await res.json();
+        if (!res.ok || data.error) {
+            renderSyncStatusBox(`<div class="text-rose-400 font-bold">Error: ${data.error || 'Failed to synchronize folder'}</div>`, true);
+            return;
+        }
+
+        let lines = [];
+        lines.push(`<div class="text-emerald-400 font-bold text-sm mb-1">✔ Synchronization Completed Successfully!</div>`);
+        lines.push(`<div class="text-slate-400">Target Folder: <span class="text-sky-300">${data.folder || folderPath}</span></div>`);
+
+        const rfiSyncObj = data.rfi_sync || (syncType === 'rfis' ? data : null);
+        const letSyncObj = data.letters_sync || (syncType === 'letters' ? data : null);
+        const rfiDetails = rfiSyncObj ? (rfiSyncObj.files || rfiSyncObj.details || []) : [];
+        const letDetails = letSyncObj ? (letSyncObj.files || letSyncObj.details || []) : [];
+
+        if (rfiDetails.length > 0) {
+            lines.push(`<div class="mt-2 font-bold text-emerald-300 border-b border-slate-800 pb-1">RFI Logs Synced (${rfiDetails.length} files):</div>`);
+            rfiDetails.forEach(d => {
+                const fname = d.filename || d.file || 'Log';
+                const pkg = d.package || d.project_id || '';
+                const added = d.appended_new ?? d.added ?? 0;
+                const updated = d.updated_existing ?? d.updated ?? 0;
+                if (d.status === 'success') {
+                    lines.push(`<div class="text-slate-300">• <b>${fname}</b> ${pkg ? '(' + pkg + ')' : ''}: <span class="text-emerald-400">+${added} new</span>, <span class="text-sky-400">${updated} updated</span></div>`);
+                } else {
+                    lines.push(`<div class="text-amber-400">• <b>${fname}</b>: ${d.message || d.reason || d.status}</div>`);
+                }
+            });
+        }
+
+        if (letDetails.length > 0) {
+            lines.push(`<div class="mt-2 font-bold text-indigo-300 border-b border-slate-800 pb-1">Letters Logs Synced (${letDetails.length} files):</div>`);
+            letDetails.forEach(d => {
+                const fname = d.filename || d.file || 'Letters Log';
+                const dirLabel = d.is_incoming === true ? 'From Contractor' : (d.is_incoming === false ? 'To Contractor' : (d.direction || 'All'));
+                const added = d.appended_new_total ?? d.added ?? 0;
+                const updated = d.updated_existing_total ?? d.updated ?? 0;
+                const links = d.hyperlinks_added_total ?? 0;
+                if (d.status === 'success') {
+                    lines.push(`<div class="text-slate-300">• <b>${fname}</b> [${dirLabel}]: <span class="text-emerald-400">+${added} new</span>, <span class="text-sky-400">${updated} responses updated</span>, <span class="text-indigo-300">${links} hyperlinks active</span></div>`);
+                } else {
+                    lines.push(`<div class="text-amber-400">• <b>${fname}</b>: ${d.message || d.reason || d.status}</div>`);
+                }
+            });
+        }
+
+        if (rfiDetails.length === 0 && letDetails.length === 0) {
+            lines.push(`<div class="text-amber-300 mt-1">No matching Excel (.xlsx) files found in the specified folder. You can click "Generate & Sync Both Logs in Folder" below to create fresh From/To Contractor logs directly in that folder.</div>`);
+        }
+
+        renderSyncStatusBox(lines.join(''));
+    } catch (err) {
+        renderSyncStatusBox(`<div class="text-rose-400 font-bold">Network/Server Error: ${err.message}</div>`, true);
+    }
+}
+window.executeCustomFolderSync = executeCustomFolderSync;
+
+async function executeGenerateDirectionLettersInFolder() {
+    const inputEl = document.getElementById('input-custom-sync-folder');
+    const folderPath = inputEl && inputEl.value.trim()
+        ? inputEl.value.trim()
+        : 'C:\\Users\\bimst\\Downloads\\ACONEX\\Logs';
+    const projectId = currentProjectContext || null;
+
+    renderSyncStatusBox(`<div class="flex items-center gap-2 text-indigo-400 font-bold"><span class="animate-spin inline-block w-3.5 h-3.5 border-2 border-indigo-400 border-t-transparent rounded-full"></span> Generating & Syncing Directional Letters Logs (From Contractor & To Contractor) in: ${folderPath} ...</div>`);
+
+    try {
+        const res = await fetch('/api/logs/generate_direction_letters', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ folder_path: folderPath, project_id: projectId })
+        });
+        const data = await res.json();
+        if (!res.ok || data.error) {
+            renderSyncStatusBox(`<div class="text-rose-400 font-bold">Error: ${data.error || 'Failed to generate directional logs'}</div>`, true);
+            return;
+        }
+
+        let lines = [];
+        const genFiles = data.generated_files || data.details || [];
+        lines.push(`<div class="text-emerald-400 font-bold text-sm mb-1">✔ Directional Letters Logs Created & Synchronized (${genFiles.length} directional logs + ${data.existing_logs_synced || 0} workbook logs)!</div>`);
+        lines.push(`<div class="text-slate-400">Saved & Synced in Folder: <span class="text-sky-300">${data.folder_path || data.folder || folderPath}</span></div>`);
+        genFiles.forEach(d => {
+            const fname = d.filename || d.file;
+            const isFrom = (d.direction || '').toLowerCase().includes('from') || d.direction === 'inbound';
+            lines.push(`<div class="text-slate-300 mt-1">• <b>${fname}</b> [${isFrom ? 'From Contractor (Inbound)' : 'To Contractor (Outbound)'}]: <span class="text-emerald-400">Saved & Synced in-place</span></div>`);
+        });
+        renderSyncStatusBox(lines.join(''));
+    } catch (err) {
+        renderSyncStatusBox(`<div class="text-rose-400 font-bold">Error: ${err.message}</div>`, true);
+    }
+}
+window.executeGenerateDirectionLettersInFolder = executeGenerateDirectionLettersInFolder;
+
+async function uploadAndSyncSingleExcelLog() {
+    const fileInput = document.getElementById('input-single-excel-sync');
+    if (!fileInput || !fileInput.files || fileInput.files.length === 0) {
+        renderSyncStatusBox(`<div class="text-amber-400 font-bold">Please choose an Excel (.xlsx) file first.</div>`, true);
+        return;
+    }
+    const file = fileInput.files[0];
+    const formData = new FormData();
+    formData.append('file', file);
+
+    renderSyncStatusBox(`<div class="flex items-center gap-2 text-amber-400 font-bold"><span class="animate-spin inline-block w-3.5 h-3.5 border-2 border-amber-400 border-t-transparent rounded-full"></span> Uploading & Synchronizing ${file.name} ...</div>`);
+
+    try {
+        const res = await fetch('/api/rfi_explore/upload_sync', {
+            method: 'POST',
+            body: formData
+        });
+        if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            renderSyncStatusBox(`<div class="text-rose-400 font-bold">Upload Sync Failed: ${errData.error || res.statusText}</div>`, true);
+            return;
+        }
+        const blob = await res.blob();
+        const downloadUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = downloadUrl;
+        a.download = `Synced_${file.name}`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(downloadUrl);
+
+        renderSyncStatusBox(`<div class="text-emerald-400 font-bold">✔ File "${file.name}" synchronized with latest Aconex database records and downloaded as "Synced_${file.name}"!</div>`);
+    } catch (err) {
+        renderSyncStatusBox(`<div class="text-rose-400 font-bold">Error: ${err.message}</div>`, true);
+    }
+}
+window.uploadAndSyncSingleExcelLog = uploadAndSyncSingleExcelLog;
+
+
+// =============================================================================
+// USER DATA REFRESH & OUT-OF-DATE REPORT CONTROLS
+// =============================================================================
+async function openRefreshRequestModal(prefillPackage = '') {
+    const modal = document.getElementById('modal-refresh-request');
+    if (!modal) return;
+
+    // Reset views
+    document.getElementById('rr-form-container')?.classList.remove('hidden');
+    const resultCont = document.getElementById('rr-result-container');
+    if (resultCont) {
+        resultCont.classList.add('hidden');
+        resultCont.innerHTML = '';
+    }
+
+    // Populate packages dropdown (Fetch from API if not yet in memory)
+    const pkgSelect = document.getElementById('rr-package');
+    if (pkgSelect) {
+        let projs = (typeof allProjects !== 'undefined' && allProjects && allProjects.length > 0) ? allProjects : (window.allProjects || []);
+        if (!projs || projs.length === 0) {
+            try {
+                const res = await fetch('/api/projects');
+                if (res.ok) {
+                    const data = await res.json();
+                    projs = data.data || [];
+                    allProjects = projs;
+                    window.allProjects = projs;
+                }
+            } catch (err) {
+                console.error('Could not fetch projects for dropdown:', err);
+            }
+        }
+
+                const fallbackPackages = [
+            { project_id: 'DP01', project_title: 'DP01 - Area 1 Basement & Superstructure' },
+            { project_id: 'DP02', project_title: 'DP02 - Area 2 Basement & Superstructure' },
+            { project_id: 'DP03-East', project_title: 'DP03 East - Buildings & Infrastructure' },
+            { project_id: 'DP03-West', project_title: 'DP03 West - Buildings & Infrastructure' },
+            { project_id: 'DP04', project_title: 'DP04 Buildings & Infrastructure' },
+            { project_id: 'DP05', project_title: 'DP05 Buildings & Infrastructure' },
+            { project_id: 'DP06', project_title: 'DP06 Buildings & Infrastructure' },
+            { project_id: 'DP07', project_title: 'DP07 Buildings & Infrastructure' },
+            { project_id: 'DP08 - South Golf', project_title: 'DP08 - South Golf' },
+            { project_id: 'Grand Canal', project_title: 'Grand Canal Infrastructure' },
+            { project_id: 'West Canal', project_title: 'West Canal Infrastructure' },
+            { project_id: 'Infra', project_title: 'Primary Infrastructure & Utility (Package A East)' },
+            { project_id: 'MMS', project_title: 'MMS / Substation 220kV' },
+            { project_id: 'RO Plant', project_title: 'Sea Water RO Desalination Plant' },
+            { project_id: 'STP', project_title: 'Sewage Treatment Plant' },
+            { project_id: 'Airport', project_title: 'Ras El Hekma Airport Early Works' },
+            { project_id: 'Ring Road', project_title: 'Ring Road Infrastructure' },
+            { project_id: 'General Grading', project_title: 'Bulk Earthworks & Grading' },
+            { project_id: 'Aedas Design Packages', project_title: 'Aedas Design Packages' }
+        ];
+
+        const listToRender = (projs && projs.length > 0) ? projs : fallbackPackages;
+        let optionsHtml = '<option value="General Platform / All Packages">General Platform / All Packages</option>';
+        listToRender.forEach(p => {
+            const pid = p.project_id || '';
+            const title = p.project_title || p.project_name || pid;
+            const isSel = (prefillPackage && (prefillPackage === pid || prefillPackage === title)) ? 'selected' : '';
+            optionsHtml += `<option value="${escapeHtml(pid)}" ${isSel}>[${escapeHtml(pid)}] ${escapeHtml(title)}</option>`;
+        });
+        pkgSelect.innerHTML = optionsHtml;
+    }
+
+    // Pre-fill user info from localStorage
+    const savedName = localStorage.getItem('rr_requester_name') || '';
+    const savedEmail = localStorage.getItem('rr_requester_email') || '';
+    const nameInput = document.getElementById('rr-name');
+    const emailInput = document.getElementById('rr-email');
+    if (nameInput && savedName) nameInput.value = savedName;
+    if (emailInput && savedEmail) emailInput.value = savedEmail;
+
+    // Fetch live business hours status
+    try {
+        const res = await fetch('/api/refresh-requests/business-hours');
+        if (res.ok) {
+            const bh = await res.json();
+            const badge = document.getElementById('rr-bh-badge');
+            const timeEl = document.getElementById('rr-bh-time');
+            const slaEl = document.getElementById('rr-bh-sla');
+            if (badge) {
+                if (bh.is_in_hours) {
+                    badge.className = 'px-2.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center gap-1.5';
+                    badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>Within Business Hours';
+                } else {
+                    badge.className = 'px-2.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1.5';
+                    badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>After-Hours / Weekend';
+                }
+            }
+            if (timeEl) timeEl.innerText = bh.cairo_time_str || '';
+            if (slaEl) slaEl.innerText = bh.sla_text || '';
+        }
+    } catch (e) {
+        console.warn('Could not fetch business hours:', e);
+    }
+
+    modal.classList.remove('hidden');
+    if (window.lucide) lucide.createIcons();
+}
+window.openRefreshRequestModal = openRefreshRequestModal;
+
+function closeRefreshRequestModal() {
+    const modal = document.getElementById('modal-refresh-request');
+    if (modal) modal.classList.add('hidden');
+}
+window.closeRefreshRequestModal = closeRefreshRequestModal;
+
+async function submitRefreshRequest(e) {
+    e.preventDefault();
+    const btn = document.getElementById('rr-submit-btn');
+    const originalText = btn ? btn.innerHTML : '';
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i><span>Validating & Submitting...</span>';
+        if (window.lucide) lucide.createIcons();
+    }
+
+    const payload = {
+        requester_name: document.getElementById('rr-name')?.value.trim() || '',
+        requester_email: document.getElementById('rr-email')?.value.trim() || '',
+        package_id: document.getElementById('rr-package')?.value || 'General',
+        category: document.getElementById('rr-category')?.value || 'General',
+        reference_no: document.getElementById('rr-ref')?.value.trim() || '',
+        user_notes: document.getElementById('rr-notes')?.value.trim() || ''
+    };
+
+    // Save requester identity for convenience
+    if (payload.requester_name) localStorage.setItem('rr_requester_name', payload.requester_name);
+    if (payload.requester_email) localStorage.setItem('rr_requester_email', payload.requester_email);
+
+    try {
+        const res = await fetch('/api/refresh-requests/submit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || 'Submission failed');
+        }
+
+        const data = await res.json();
+        const ticket = data.ticket || {};
+        const findings = ticket.validation_findings || {};
+
+        // Switch to result container
+        document.getElementById('rr-form-container')?.classList.add('hidden');
+        const resultCont = document.getElementById('rr-result-container');
+        if (resultCont) {
+            resultCont.classList.remove('hidden');
+
+            const isHours = ticket.is_in_hours;
+            const badgeClass = isHours ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30' : 'bg-amber-500/15 text-amber-300 border-amber-500/30';
+            const badgeText = isHours ? 'Processed Live (Within Business Hours)' : 'Queued for Next Business Day 08:00 AM';
+
+            let refDetailsHtml = '';
+            if (findings.ref_item_found && findings.ref_item_details) {
+                const d = findings.ref_item_details;
+                refDetailsHtml = `
+                    <div class="p-3 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-300 space-y-1">
+                        <div class="text-[10px] font-bold uppercase tracking-wider text-sky-400">Record Found in Aconex Analytical Warehouse:</div>
+                        <div><strong>Identifier:</strong> <span class="font-mono text-white">${escapeHtml(d.mail_number || d.doc_number || '')}</span></div>
+                        <div><strong>Subject/Title:</strong> ${escapeHtml(d.subject || d.title || '')}</div>
+                        <div><strong>Date:</strong> ${escapeHtml(d.mail_date || d.date_modified || '')} | <strong>Status:</strong> ${escapeHtml(d.status || 'N/A')}</div>
+                    </div>
+                `;
+            }
+
+            resultCont.innerHTML = `
+                <div class="text-center space-y-2 pb-2">
+                    <div class="w-12 h-12 rounded-2xl bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 flex items-center justify-center mx-auto shadow-lg shadow-emerald-500/10">
+                        <i data-lucide="check-circle-2" class="w-6 h-6"></i>
+                    </div>
+                    <h3 class="text-base font-extrabold text-white">Refresh Request Logged & Validated</h3>
+                    <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-mono font-bold bg-slate-950 border border-slate-800 text-sky-400">
+                        <span>Ticket ID:</span>
+                        <span class="text-white">${escapeHtml(ticket.ticket_id || '')}</span>
+                    </div>
+                </div>
+
+                <div class="p-3.5 rounded-xl bg-slate-950/70 border border-slate-800 space-y-2 text-xs">
+                    <div class="flex items-center justify-between">
+                        <span class="text-slate-400">Queue & SLA Status:</span>
+                        <span class="px-2 py-0.5 rounded text-[11px] font-bold border ${badgeClass}">${badgeText}</span>
+                    </div>
+                    <div class="flex items-center justify-between">
+                        <span class="text-slate-400">Analytical Database Cutoff:</span>
+                        <span class="font-mono text-emerald-400 font-bold">${escapeHtml(findings.current_db_cutoff || 'Current')}</span>
+                    </div>
+                    <div class="flex items-center justify-between">
+                        <span class="text-slate-400">Assigned Reviewer:</span>
+                        <span class="text-sky-300 font-semibold">Mohamed Meneaem (Hill International)</span>
+                    </div>
+                </div>
+
+                <!-- Automated Technical Validation Assessment -->
+                <div class="p-4 rounded-xl bg-sky-950/30 border border-sky-500/30 space-y-2 text-xs">
+                    <div class="flex items-center gap-1.5 font-bold text-sky-300">
+                        <i data-lucide="cpu" class="w-4 h-4 text-sky-400"></i>
+                        <span>Automated Engine Assessment: ${escapeHtml(findings.verdict_title || 'Validated')}</span>
+                    </div>
+                    <p class="text-slate-300 leading-relaxed">${escapeHtml(findings.recommended_action || '')}</p>
+                    ${refDetailsHtml}
+                </div>
+
+                <div class="p-3 rounded-xl bg-slate-950/90 border border-slate-800/80 text-[11px] text-slate-400 flex items-start gap-2">
+                    <i data-lucide="mail-check" class="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5"></i>
+                    <div>
+                        An executive notification containing your request, current warehouse state, and automated assessment has been dispatched to 
+                        <strong class="text-slate-200">MohamedMeneaem@hillintl.com</strong>.
+                    </div>
+                </div>
+
+                <div class="pt-2 flex items-center justify-end gap-3">
+                    <button type="button" onclick="closeRefreshRequestModal()" class="px-5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold transition">
+                        Done & Close
+                    </button>
+                </div>
+            `;
+            if (window.lucide) lucide.createIcons();
+        }
+
+    } catch (err) {
+        alert('Error submitting request: ' + err.message);
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = originalText;
+            if (window.lucide) lucide.createIcons();
+        }
+    }
+}
+window.submitRefreshRequest = submitRefreshRequest;

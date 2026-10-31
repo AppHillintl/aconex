@@ -51,7 +51,7 @@ def detect_package_from_name_or_content(filename: str = "", wb: openpyxl.Workboo
         return "INFRA"
     if "MSS" in text or "MPS" in text or "POWER" in text:
         return "MSS"
-    if "RO" in text or "POTABLE" in text:
+    if re.search(r'\bRO\b', text) or "RO PLANT" in text or "POTABLE" in text or "3045" in text:
         return "RO"
     if "STP" in text or "SEWAGE" in text:
         return "STP"
@@ -180,7 +180,12 @@ def extract_rfi_log_data(package_filter="DP07"):
             m.sent_date,
             m.status,
             m.days_late,
-            l.aconex_url
+            COALESCE(
+                CASE WHEN m.aconex_url LIKE '%MiniURL%' THEN m.aconex_url END,
+                CASE WHEN l.aconex_url LIKE '%MiniURL%' THEN l.aconex_url END,
+                l.aconex_url,
+                m.aconex_url
+            ) as aconex_url
         FROM fact_mail m
         LEFT JOIN mail_aconex_links l ON m.mail_no = l.mail_no
         WHERE (m.mail_type = 'Request For Information' OR m.mail_no LIKE '%-RFI-%')
@@ -208,7 +213,12 @@ def extract_rfi_log_data(package_filter="DP07"):
                 m.from_organization,
                 m.to_organization,
                 m.sent_date,
-                l.aconex_url
+                COALESCE(
+                    CASE WHEN m.aconex_url LIKE '%MiniURL%' THEN m.aconex_url END,
+                    CASE WHEN l.aconex_url LIKE '%MiniURL%' THEN l.aconex_url END,
+                    l.aconex_url,
+                    m.aconex_url
+                ) as aconex_url
             FROM fact_mail m
             LEFT JOIN mail_aconex_links l ON m.mail_no = l.mail_no
             WHERE (m.reference_number = ? AND m.reference_number IS NOT NULL AND m.reference_number != '')

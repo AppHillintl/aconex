@@ -1,3 +1,29 @@
+from typing import Optional, List, Dict, Any, Union, Tuple
+
+def extract_clean_orgs(raw_rows):
+    """
+    Parses Oracle Aconex organization and recipient strings.
+    Handles concatenated recipients: 'OrgA: User1 , OrgB: User2'
+    Returns sorted list of distinct, valid company names.
+    """
+    clean_set = set()
+    for row in raw_rows:
+        val = row[0] if isinstance(row, (tuple, list)) else row
+        if not val or not isinstance(val, str):
+            continue
+        for token in val.split(','):
+            tok = token.strip()
+            if not tok:
+                continue
+            if ':' in tok:
+                org = tok.split(':', 1)[0].strip()
+            else:
+                org = tok.strip()
+            org = org.strip('"\' ')
+            if org and 1 < len(org) < 80 and not org.lower().startswith('http'):
+                clean_set.add(org)
+    return sorted(list(clean_set))
+
 import io
 import os
 import re
@@ -383,9 +409,15 @@ def get_project_overdue_report(project_id: str, from_date: Optional[str] = None,
                 s.date_due::VARCHAR,
                 s.days_late,
                 'https://mea.aconex.com/WorkflowSearch?searchtext=' || s.workflow_no || '&projectid=1744833878' AS aconex_url,
-                w.workflow_name
+                w.workflow_name,
+                CASE 
+                    WHEN d.document_id IS NOT NULL AND LENGTH(TRIM(d.document_id)) > 3 AND d.document_id != 'None'
+                    THEN 'https://mea.aconex.com/ViewDoc?trackingid=' || d.document_id || '&projectid=1744833878&docno=' || s.document_no || '&username=aabdelrahim4&action=ViewDocumentSummary'
+                    ELSE 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=DOC-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=documentNumber%3A%22' || COALESCE(s.document_no, '') || '%22'
+                END AS doc_aconex_url
             FROM fact_workflow_steps s
             JOIN fact_workflows w ON s.workflow_no = w.workflow_no
+            LEFT JOIN (SELECT document_no, MAX(tracking_id) as document_id, MAX(aconex_url) as doc_direct_url FROM dim_documents GROUP BY document_no) d ON s.document_no = d.document_no
             WHERE w.project_package = ?
               AND s.is_overdue = true
               AND (s.assigned_to_organization ILIKE '%shaker%' OR s.assigned_to_organization ILIKE '%ecg%'
@@ -413,7 +445,8 @@ def get_project_overdue_report(project_id: str, from_date: Optional[str] = None,
                 "date_due": str(w[6])[:10] if w[6] else "-",
                 "due_date": str(w[6])[:10] if w[6] else "-",
                 "days_late": int(w[7] or 0),
-                "aconex_url": w[8]
+                "aconex_url": w[8],
+                "doc_aconex_url": w[10] if len(w) > 10 else w[8]
             })
 
         # 4. Overdue Letters & Correspondence (Excluding SCRs)
@@ -422,7 +455,7 @@ def get_project_overdue_report(project_id: str, from_date: Optional[str] = None,
                 mail_no, mail_type, subject, reference_number,
                 from_organization, to_organization, from_name,
                 sent_date::VARCHAR, due_date::VARCHAR, days_late,
-                COALESCE(aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A' || mail_no) AS aconex_url
+                COALESCE(aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A%22' || mail_no || '%22') AS aconex_url
             FROM fact_mail
             WHERE project_package = ?
               AND (is_overdue = true OR days_late > 0)
@@ -456,7 +489,7 @@ def get_project_overdue_report(project_id: str, from_date: Optional[str] = None,
                 r.mail_no, r.subject, COALESCE(m.reference_number, r.mail_no) as ref_no,
                 r.from_organization, r.to_organization, r.from_name,
                 r.sent_date::VARCHAR, r.due_date::VARCHAR, r.days_late,
-                COALESCE(r.aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A' || r.mail_no) AS aconex_url,
+                COALESCE(r.aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A%22' || r.mail_no || '%22') AS aconex_url,
                 COALESCE(m.mail_type, 'Request For Information') as mail_type,
                 r.project_package
             FROM fact_rfis r
@@ -498,7 +531,7 @@ def get_project_overdue_report(project_id: str, from_date: Optional[str] = None,
                     mail_no, subject, COALESCE(reference_number, mail_no) as ref_no,
                     from_organization, to_organization, from_name,
                     sent_date::VARCHAR, due_date::VARCHAR, days_late,
-                    COALESCE(aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A' || mail_no) AS aconex_url,
+                    COALESCE(aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A%22' || mail_no || '%22') AS aconex_url,
                     mail_type
                 FROM fact_mail
                 WHERE (project_package = 'DP01' OR subject ILIKE '%MD01%' OR (project_package = 'Aedas Design Packages' AND subject ILIKE '%SCR%'))
@@ -514,7 +547,7 @@ def get_project_overdue_report(project_id: str, from_date: Optional[str] = None,
                     mail_no, subject, COALESCE(reference_number, mail_no) as ref_no,
                     from_organization, to_organization, from_name,
                     sent_date::VARCHAR, due_date::VARCHAR, days_late,
-                    COALESCE(aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A' || mail_no) AS aconex_url,
+                    COALESCE(aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A%22' || mail_no || '%22') AS aconex_url,
                     mail_type
                 FROM fact_mail
                 WHERE project_package = ?
@@ -770,7 +803,7 @@ def generate_project_overdue_html(
             html += f"""
                 <tr>
                     <td><a href="{w['aconex_url']}" target="_blank" class="link-aconex">{w['workflow_no']}</a></td>
-                    <td style="font-family: monospace; font-size: 11px;">{w['document_no']}</td>
+                    <td style="font-family: monospace; font-size: 11px;"><a href="{w.get('doc_aconex_url', w['aconex_url'])}" target="_blank" class="link-aconex">{w['document_no']}</a></td>
                     <td>
                         <div style="font-weight: 600; color: #0f172a;">{w['document_title']}</div>
                         <div style="font-size: 11px; color: #64748b; margin-top: 2px;">Step: <strong>{w['step_name']}</strong></div>
@@ -1096,7 +1129,13 @@ def generate_project_overdue_excel(
             c_link.font = link_font
             c_link.border = thin_border
 
-            ws_wf.cell(r_idx, 2, w["document_no"]).font = regular_font
+            c_doc = ws_wf.cell(r_idx, 2)
+            if w.get("document_no") and w.get("document_no") != "-":
+                c_doc.value = f'=HYPERLINK("{w.get("doc_aconex_url", w["aconex_url"])}", "{w["document_no"]}")'
+                c_doc.font = link_font
+            else:
+                c_doc.value = w.get("document_no", "-")
+                c_doc.font = regular_font
             ws_wf.cell(r_idx, 3, w["document_title"]).font = regular_font
             ws_wf.cell(r_idx, 4, w["step_name"]).font = bold_font
             ws_wf.cell(r_idx, 5, w["assigned_org"]).font = regular_font
@@ -1432,8 +1471,8 @@ def get_contractor_rfis_data(
             elif "shaker-ecg" in c_clean.lower():
                 where_clauses.append("r.to_organization ILIKE '%shaker-ecg%'")
             else:
-                where_clauses.append("LOWER(TRIM(r.to_organization)) = LOWER(TRIM(?))")
-                params.append(c_clean)
+                where_clauses.append("r.to_organization ILIKE ?")
+                params.append(f"%{c_clean}%")
 
         if search and search.strip():
             s = f"%{search.strip()}%"
@@ -1454,7 +1493,7 @@ def get_contractor_rfis_data(
                 r.days_late,
                 r.is_overdue,
                 r.project_package,
-                COALESCE(r.aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A' || r.mail_no) AS aconex_url
+                COALESCE(r.aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A%22' || r.mail_no || '%22') AS aconex_url
             FROM fact_rfis r
             WHERE {where_sql}
             ORDER BY r.days_late DESC, r.sent_date DESC NULLS LAST
@@ -1525,7 +1564,7 @@ def get_contractor_rfis_data(
                     scr_where.append("to_organization ILIKE '%shaker-ecg%'")
                 else:
                     scr_where.append("LOWER(TRIM(to_organization)) = LOWER(TRIM(?))")
-                    scr_params.append(c_clean)
+                    scr_params.append(f"%{c_clean}%")
             if search and search.strip():
                 s = f"%{search.strip()}%"
                 scr_where.append("(mail_no ILIKE ? OR subject ILIKE ? OR from_organization ILIKE ? OR to_organization ILIKE ?)")
@@ -1543,7 +1582,7 @@ def get_contractor_rfis_data(
                     days_late,
                     is_overdue,
                     'DP01' as project_package,
-                    COALESCE(aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A' || mail_no) AS aconex_url,
+                    COALESCE(aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A%22' || mail_no || '%22') AS aconex_url,
                     mail_type
                 FROM fact_mail
                 WHERE {' AND '.join(scr_where)}
@@ -1604,9 +1643,27 @@ def get_contractor_rfis_data(
             WHERE {' AND '.join(master_comp_where)}
             ORDER BY 1
         """, master_comp_params).fetchall()
-        active_comps = set(company_counts.keys())
-        active_comps.update([c[0] for c in master_companies_rows if c[0]])
-        master_companies = sorted(list(active_comps))
+        if target_pid:
+            # When a specific project is selected (e.g. DP01), ONLY list companies that are relevant responding entities for that project!
+            active_comps = set(extract_clean_orgs(list(company_counts.keys())))
+            if target_pid == 'DP01':
+                DP01_ALLOWED = {'Aedas Limited', 'ECG', 'Hill Inter', 'Modon Real Estate', 'Shaker Egypt', 'Shaker-ECG consortium RASELHEKMA'}
+                active_comps = {c for c in active_comps if c in DP01_ALLOWED}
+        else:
+            # Overall master list across all projects
+            active_comps = set(extract_clean_orgs(list(company_counts.keys())))
+            active_comps.update(extract_clean_orgs(master_companies_rows))
+        
+        # Exclude contractors (senders) and non-responder entities so user only sees actual answering consultants/PMC/Client
+        CONTRACTOR_KEYWORDS = ['orascom', 'hassan allam', 'ccc', 'innovo', 'redcon', 'cscec', 'trojan', 'metito', 'acc for engineering', 'consolidated', 'safegate', 'horema']
+        filtered_comps = []
+        for org in active_comps:
+            low = org.lower()
+            if any(k in low for k in CONTRACTOR_KEYWORDS):
+                continue
+            if len(org.strip()) > 1:
+                filtered_comps.append(org.strip())
+        master_companies = sorted(filtered_comps)
 
         pkg_rows = con.execute("SELECT project_id FROM dim_project_packages ORDER BY sort_order ASC").fetchall()
         all_pkg_ids = [p[0] for p in pkg_rows if p[0]]

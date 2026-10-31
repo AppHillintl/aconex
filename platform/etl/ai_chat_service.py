@@ -179,7 +179,7 @@ def call_gemini_model(query: str, base_result: dict, is_ar: bool) -> str:
         candidates = [target_model, "gemini-3-flash-preview", "gemini-flash-latest", "gemini-3.1-pro-preview"]
         
         prompt = f"""
-You are the official Ras El Hekma Project Controls AI Copilot powered by Google Gemini and live Oracle Aconex database.
+You are the official Ras El Hekma Project Controls AI Copilot (Hill Copilot) - approved by Hill International (PMC) and powered by live Oracle Aconex database.
 User Query: "{query}"
 
 Live Verified Project Controls Ground Truth from Oracle Aconex DuckDB:
@@ -190,9 +190,10 @@ Key Performance Indicators (KPIs):
 
 Instructions:
 1. Provide an executive, professional response in {"Arabic" if is_ar else "English"}.
-2. Use markdown formatting with bolding on key numbers, SLAs, and package names.
-3. Be clear and direct for senior management and project controls engineers.
-4. Keep the response concise, informative, and actionable.
+2. Explicitly adhere to Hill International Project Controls standards and methodologies.
+3. Use markdown formatting with bolding on key numbers, SLAs, and package names.
+4. Be clear and direct for senior management and project controls engineers.
+5. Keep the response concise, informative, and actionable.
 """
         for cand in candidates:
             try:
@@ -637,64 +638,85 @@ def handle_letter_query(con, q: str, pkg: str | None, since_date: str, is_overdu
 def handle_bic_query(con, q: str, pkg: str | None, is_ar: bool) -> dict:
     sql = """
         SELECT 
-            b.doc_no, b.doc_title, b.party_role, b.ball_in_court_party,
-            b.assigned_user, b.days_held, b.sla_status, b.status,
-            b.package_code
+            COALESCE(b.process_ref, b.mail_no, '-') as process_ref,
+            COALESCE(b.project_package, '-') as project_package,
+            COALESCE(b.mail_no, b.process_ref, '-') as doc_title,
+            COALESCE(b.ball_in_court, '-') as ball_in_court_party,
+            COALESCE(b.contractor, '-') as contractor,
+            COALESCE(b.overdue_days, b.delay, b.duration, 0) as days_held,
+            CASE WHEN b.is_overdue = true OR b.overdue_days > 0 THEN 'Overdue' ELSE 'Active' END as sla_status,
+            COALESCE(b.action, b.process_status, 'Action Required') as action_status,
+            COALESCE(b.aconex_url, '#') as aconex_url
         FROM fact_ball_in_court_processes b
         WHERE 1=1
     """
     params = []
     if pkg:
-        sql += " AND b.package_code = ?"
+        sql += " AND b.project_package = ?"
         params.append(pkg)
-    if "overdue" in q.lower() or "متأخر" in q or "sla" in q.lower():
-        sql += " AND b.sla_status = 'Overdue'"
+        
+    q_lower = q.lower()
+    if "overdue" in q_lower or "متأخر" in q or "sla" in q_lower or "تأخير" in q:
+        sql += " AND (b.is_overdue = true OR b.overdue_days > 0)"
+        
+    if "شاكر" in q or "shaker" in q_lower or "ecg" in q_lower:
+        sql += " AND (b.ball_in_court ILIKE '%Shaker%' OR b.ball_in_court ILIKE '%ECG%')"
+    elif "مقاول" in q or "contractor" in q_lower:
+        sql += " AND (b.ball_in_court NOT ILIKE '%Shaker%' AND b.ball_in_court NOT ILIKE '%ECG%' AND b.ball_in_court NOT ILIKE '%Hill%')"
 
-    sql += " ORDER BY b.days_held DESC LIMIT 50"
+    sql += " ORDER BY b.overdue_days DESC, b.delay DESC LIMIT 50"
     rows = con.execute(sql, params).fetchall()
 
     total_count = len(rows)
     overdue_count = sum(1 for r in rows if r[6] == 'Overdue')
-    max_days = max([r[5] for r in rows if r[5]] + [0])
+    max_days = int(max([r[5] for r in rows if r[5]] + [0]))
 
     target_title = pkg or ("All Packages" if not is_ar else "كافة المشاريع")
 
     if is_ar:
         text = f"### تقرير موقف الكرة في الملعب (Ball in Court) - {target_title}\n\n"
-        text += f"- **إجمالي العمليات المعلقة:** **{total_count}** عملية مراجعة.\n"
-        text += f"- **العمليات المتجاوزة لـ SLA:** **{overdue_count}** عملية تجاوزت الوقت المحدد (الحد الأقصى للاحتجاز: **{max_days} يوم**).\n"
+        text += f"- **إجمالي العمليات المعلقة:** **{total_count}** عملية مراجعة واستجابة.\n"
+        text += f"- **العمليات المتجاوزة لـ SLA:** **{overdue_count}** عملية تجاوزت الوقت التعاقدي المحدد (أقصى تأخير: **+{max_days} يوم**).\n"
+        if "شاكر" in q or "shaker" in q_lower or "ecg" in q_lower:
+            text += f"- تم تصفية العمليات لتوضيح المعلقات على استشاري الإشراف **(Shaker-ECG Consortium)**.\n"
     else:
         text = f"### Ball in Court (BIC) Governance Report - {target_title}\n\n"
         text += f"- **Active Processes Held:** **{total_count}** deliverables.\n"
-        text += f"- **SLA Overdue Bottlenecks:** **{overdue_count}** deliverables exceeded SLA (Max Held: **{max_days} days**).\n"
+        text += f"- **SLA Overdue Bottlenecks:** **{overdue_count}** deliverables exceeded SLA (Max Delay: **+{max_days} days**).\n"
+        if "shaker" in q_lower or "ecg" in q_lower:
+            text += f"- Filtered to highlight bottlenecks on Supervision Consultant **(Shaker-ECG Consortium)**.\n"
 
     headers = [
-        "Document / Process No", "Package", "Title", "Ball in Court Party", 
-        "Assignee Name", "Days Held", "SLA Status"
+        "Process Ref / Deliverable", "Package", "Title / Mail No", "Ball in Court Party", 
+        "Contractor", "Days Held", "SLA Status", "Action / Status", "Aconex URL"
     ]
     rows_data = []
     for r in rows:
+        late_val = int(r[5]) if r[5] else 0
         rows_data.append([
             r[0],
-            r[8],
-            (r[1] or "-")[:55] + ("..." if len(r[1] or "") > 55 else ""),
+            r[1],
+            (r[2] or "-")[:55] + ("..." if len(r[2] or "") > 55 else ""),
             r[3] or "-",
             r[4] or "-",
-            f"{r[5]} days",
-            r[6] or "Active"
+            f"+{late_val}d" if late_val > 0 else "0d",
+            r[6] or "Active",
+            r[7] or "Pending",
+            r[8] or "#"
         ])
 
     kpis = {
         "Total Held": total_count,
         "SLA Overdue": overdue_count,
-        "Max Held Days": f"{max_days}d",
+        "Max Delay": f"+{max_days}d" if max_days > 0 else "0d",
         "Target": target_title
     }
 
     suggested = [
         ("موقف استشاري الإشراف Shaker-ECG" if is_ar else "Shaker-ECG Held Items"),
         ("المتأخرات على المقاولين" if is_ar else "Contractor Held Items"),
-        ("فتح تاب Ball in Court" if is_ar else "Go to Ball in Court Tab")
+        ("فتح تاب Ball in Court" if is_ar else "Go to Ball in Court Tab"),
+        ("طلبات المعلومات المتأخرة في DP03-West" if is_ar else "Overdue RFIs in DP03-West")
     ]
 
     return {

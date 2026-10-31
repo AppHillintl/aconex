@@ -16,6 +16,22 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
+import sys
+from pathlib import Path
+APP_ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(APP_ROOT / "platform" / "extractor"))
+sys.path.insert(0, str(APP_ROOT / "platform" / "etl"))
+
+try:
+    import sync_manager
+except Exception as e:
+    sync_manager = None
+
+try:
+    import ai_chat_service as acs
+except Exception as e:
+    acs = None
+
 # -----------------------------------------------------------------------------
 # 1. Page Configuration & Custom Theme
 # -----------------------------------------------------------------------------
@@ -25,6 +41,33 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# -----------------------------------------------------------------------------
+# Cloud & Local Database Resolver
+# -----------------------------------------------------------------------------
+import os
+import zipfile
+
+DB_CLOUD_ZIP = str(APP_ROOT / "aconex_cloud.duckdb.zip")
+DB_CLOUD_PATH = str(APP_ROOT / "aconex_cloud.duckdb")
+
+if not os.path.exists(DB_CLOUD_PATH) and os.path.exists(DB_CLOUD_ZIP):
+    with zipfile.ZipFile(DB_CLOUD_ZIP, "r") as zip_ref:
+        zip_ref.extractall(str(APP_ROOT))
+
+if os.path.exists(DB_CLOUD_PATH):
+    ACTIVE_DB_PATH = DB_CLOUD_PATH
+else:
+    ACTIVE_DB_PATH = str(APP_ROOT / "aconex.duckdb")
+
+import hill_auth
+
+# -----------------------------------------------------------------------------
+# HILL INTERNATIONAL CORPORATE AUTHENTICATION GATE
+# -----------------------------------------------------------------------------
+if not hill_auth.render_hill_login_gate(ACTIVE_DB_PATH):
+    st.stop()
+
 
 # Custom Executive CSS
 st.markdown("""
@@ -101,7 +144,7 @@ st.markdown("""
 # -----------------------------------------------------------------------------
 @st.cache_resource
 def get_db():
-    return duckdb.connect("aconex.duckdb", read_only=True)
+    return duckdb.connect(ACTIVE_DB_PATH, read_only=True)
 
 # -----------------------------------------------------------------------------
 # 3. Canonical Package Resolver (5-Tier Intelligence)
@@ -297,15 +340,58 @@ st.sidebar.markdown("""
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
+# Sidebar: Auto-Sync & Task Controls
+# -----------------------------------------------------------------------------
+if sync_manager:
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 🔄 Aconex Sync Center")
+    task_info = sync_manager.get_task_info()
+    micro_info = sync_manager.get_micro_batch_info()
+    is_running = sync_manager.is_sync_running()
+
+    status_badge = "🟢 Idle" if not is_running else "⏳ Sync in Progress..."
+    st.sidebar.markdown(f"**Pipeline:** {status_badge}")
+    
+    if micro_info.get("enabled"):
+        st.sidebar.markdown(f"**⚡ Micro-Batch:** 🟢 Active ({micro_info.get('interval_mins', 60)}m)")
+    else:
+        st.sidebar.markdown(f"**⚡ Micro-Batch:** ⏸️ Paused")
+        
+    st.sidebar.caption(f"**🌙 Daily Baseline:** Daily at {task_info.get('at_time', '05:00')}")
+
+    col_sync1, col_sync2 = st.sidebar.columns([1, 1])
+    with col_sync1:
+        if st.sidebar.button("⚡ Quick Delta", use_container_width=True, help="Fast Delta extraction & atomic DuckDB upsert (~45s)"):
+            sync_manager.run_immediate_delta_sync_in_background()
+            st.toast("⚡ Fast Delta sync launched in background!", icon="⚡")
+            st.rerun()
+
+    with col_sync2:
+        if st.sidebar.button("🔄 Full Sync", use_container_width=True, help="Trigger complete deep extraction with all bundles (~12m)"):
+            sync_manager.run_immediate_sync_in_background(mode="full")
+            st.toast("🚀 Full deep pipeline launched in background!", icon="🚀")
+            st.rerun()
+
+    if st.sidebar.button("📊 Reload Data Cache", use_container_width=True, help="Reload DuckDB tables into cache"):
+        st.cache_resource.clear()
+        st.toast("DuckDB cache refreshed!", icon="✅")
+        st.rerun()
+
+# -----------------------------------------------------------------------------
 # 6. Main Navigation Tabs
 # -----------------------------------------------------------------------------
-tab_overview, tab_controls, tab_rfis, tab_supervision, tab_disciplines, tab_docs = st.tabs([
+if sync_manager and sync_manager.is_sync_running():
+    st.info("⚡ **جاري تنفيذ المزامنة السريعة في صمت بالخلفية (Delta Sync Active)...** يتم سحب أحدث التقارير والمراسلات ودمجها في قاعدة البيانات بدون أي نوافذ منبثقة.")
+
+tab_overview, tab_controls, tab_rfis, tab_supervision, tab_disciplines, tab_docs, tab_copilot, tab_sync = st.tabs([
     "📊 Executive Overview",
     "🎯 Project Controls & Dispatch",
     "📋 Contractor RFIs Tracker",
     "🏛️ Supervision Backlog (Shaker-ECG)",
     "📐 Technical Office Disciplines",
-    "📂 Document Registry Search"
+    "📂 Document Registry Search",
+    "🤖 Hill Copilot (AI)",
+    "🔄 Data Sync & Scheduler"
 ])
 
 db = get_db()
@@ -401,23 +487,29 @@ with tab_overview:
                 count(*) AS count
             FROM fact_workflow_steps
             WHERE is_overdue = true
-            GROUP BY aging_bucket
-            ORDER BY min(days_late) ASC
+            GROUP BY 1
         """).df()
 
-        fig_pie = px.pie(
-            aging_df,
-            names="aging_bucket",
-            values="count",
-            hole=0.55,
-            color_discrete_sequence=["#38bdf8", "#fbbf24", "#f97316", "#ef4444"]
-        )
-        fig_pie.update_layout(
-            paper_bgcolor="#0b1120",
-            font_color="#f8fafc",
-            margin=dict(l=20, r=20, t=20, b=20)
-        )
-        st.plotly_chart(fig_pie, use_container_width=True)
+        if not aging_df.empty:
+            bucket_order = {'1 - 7 Days': 1, '8 - 14 Days': 2, '15 - 30 Days': 3, '+30 Days (Critical)': 4}
+            aging_df['order'] = aging_df['aging_bucket'].map(bucket_order).fillna(99)
+            aging_df = aging_df.sort_values('order')
+
+            fig_pie = px.pie(
+                aging_df,
+                names="aging_bucket",
+                values="count",
+                hole=0.55,
+                color_discrete_sequence=["#38bdf8", "#fbbf24", "#f97316", "#ef4444"]
+            )
+            fig_pie.update_layout(
+                paper_bgcolor="#0b1120",
+                font_color="#f8fafc",
+                margin=dict(l=20, r=20, t=20, b=20)
+            )
+            st.plotly_chart(fig_pie, use_container_width=True)
+        else:
+            st.info("No overdue items detected.")
 
 # =============================================================================
 # TAB 2: PROJECT CONTROLS & OVERDUE DISPATCH
@@ -448,15 +540,15 @@ with tab_controls:
     # Overdue Workflows for this package
     wf_query = f"""
         SELECT 
-            s.workflow_no AS [Workflow No],
-            s.step_name AS [Review Step],
-            s.document_no AS [Document No],
-            s.document_title AS [Document Title],
-            s.assigned_to_organization AS [Assigned Organization],
-            s.assigned_to_name AS [Assignee Name],
-            s.date_due::VARCHAR AS [Due Date],
-            s.days_late AS [Days Late],
-            'https://mea.aconex.com/WorkflowSearch?searchtext=' || s.workflow_no || '&projectid=1744833878' AS [Aconex URL]
+            s.workflow_no AS "Workflow No",
+            s.step_name AS "Review Step",
+            s.document_no AS "Document No",
+            s.document_title AS "Document Title",
+            s.assigned_to_organization AS "Assigned Organization",
+            s.assigned_to_name AS "Assignee Name",
+            s.date_due::VARCHAR AS "Due Date",
+            s.days_late AS "Days Late",
+            'https://mea.aconex.com/WorkflowSearch?searchtext=' || s.workflow_no || '&projectid=1744833878' AS "Aconex URL"
         FROM fact_workflow_steps s
         JOIN fact_workflows w ON s.workflow_no = w.workflow_no
         WHERE w.project_package = '{sel_pid}' AND s.is_overdue = true
@@ -587,16 +679,16 @@ with tab_rfis:
 
     sql_rfis = f"""
         SELECT 
-            r.mail_no AS [RFI No],
-            r.subject AS [Subject],
-            r.from_organization AS [Contractor (From)],
-            r.to_organization AS [Consultant (To)],
-            r.sent_date::VARCHAR AS [Sent Date],
-            r.due_date::VARCHAR AS [Due Date],
-            r.days_late AS [Days Late],
-            r.is_overdue AS [Is Overdue],
-            r.project_package AS [Raw Package],
-            r.aconex_url AS [Aconex URL]
+            r.mail_no AS "RFI No",
+            r.subject AS "Subject",
+            r.from_organization AS "Contractor (From)",
+            r.to_organization AS "Consultant (To)",
+            r.sent_date::VARCHAR AS "Sent Date",
+            r.due_date::VARCHAR AS "Due Date",
+            r.days_late AS "Days Late",
+            r.is_overdue AS "Is Overdue",
+            r.project_package AS "Raw Package",
+            r.aconex_url AS "Aconex URL"
         FROM fact_rfis r
         WHERE {' AND '.join(rfi_filters)}
         ORDER BY r.days_late DESC, r.sent_date DESC
@@ -679,15 +771,15 @@ with tab_supervision:
     
     ssc_df = db.execute("""
         SELECT 
-            w.project_package AS [Package],
-            s.workflow_no AS [Workflow No],
-            s.step_name AS [Step Name],
-            s.document_no AS [Document No],
-            s.document_title AS [Document Title],
-            s.assigned_to_name AS [Reviewer Name],
-            s.days_late AS [Days Late],
-            s.date_due::VARCHAR AS [Due Date],
-            'https://mea.aconex.com/WorkflowSearch?searchtext=' || s.workflow_no || '&projectid=1744833878' AS [Aconex URL]
+            w.project_package AS "Package",
+            s.workflow_no AS "Workflow No",
+            s.step_name AS "Step Name",
+            s.document_no AS "Document No",
+            s.document_title AS "Document Title",
+            s.assigned_to_name AS "Reviewer Name",
+            s.days_late AS "Days Late",
+            s.date_due::VARCHAR AS "Due Date",
+            'https://mea.aconex.com/WorkflowSearch?searchtext=' || s.workflow_no || '&projectid=1744833878' AS "Aconex URL"
         FROM fact_workflow_steps s
         JOIN fact_workflows w ON s.workflow_no = w.workflow_no
         WHERE s.is_overdue = true
@@ -723,12 +815,12 @@ with tab_disciplines:
     
     disc_df = db.execute("""
         SELECT 
-            discipline_name AS [Discipline],
-            count(*) AS [Total Documents],
-            count(CASE WHEN review_status ILIKE '%approved%' THEN 1 END) AS [Approved],
-            count(CASE WHEN review_status ILIKE '%rejected%' THEN 1 END) AS [Rejected],
-            count(CASE WHEN review_status ILIKE '%revise%' OR review_status ILIKE '%resubmit%' THEN 1 END) AS [Revise & Resubmit],
-            count(CASE WHEN review_status IS NULL OR review_status = '' OR review_status ILIKE '%pending%' THEN 1 END) AS [Under Review]
+            discipline_name AS "Discipline",
+            count(*) AS "Total Documents",
+            count(CASE WHEN review_status ILIKE '%approved%' THEN 1 END) AS "Approved",
+            count(CASE WHEN review_status ILIKE '%rejected%' THEN 1 END) AS "Rejected",
+            count(CASE WHEN review_status ILIKE '%revise%' OR review_status ILIKE '%resubmit%' THEN 1 END) AS "Revise & Resubmit",
+            count(CASE WHEN review_status IS NULL OR review_status = '' OR review_status ILIKE '%pending%' THEN 1 END) AS "Under Review"
         FROM dim_documents
         WHERE discipline_name IS NOT NULL AND discipline_name != ''
         GROUP BY discipline_name
@@ -759,15 +851,15 @@ with tab_docs:
 
     doc_results = db.execute(f"""
         SELECT 
-            document_no AS [Document No],
-            title AS [Title],
-            doc_type AS [Doc Type],
-            discipline_name AS [Discipline],
-            status AS [Status],
-            review_status AS [Review Status],
-            revision AS [Rev],
-            date_modified::VARCHAR AS [Last Modified],
-            aconex_url AS [Aconex URL]
+            document_no AS "Document No",
+            title AS "Title",
+            doc_type AS "Doc Type",
+            discipline_name AS "Discipline",
+            status AS "Status",
+            review_status AS "Review Status",
+            revision AS "Rev",
+            date_modified::VARCHAR AS "Last Modified",
+            aconex_url AS "Aconex URL"
         FROM dim_documents
         WHERE {' AND '.join(doc_clauses)}
         ORDER BY date_modified DESC NULLS LAST
@@ -782,3 +874,187 @@ with tab_docs:
         use_container_width=True,
         hide_index=True
     )
+
+# =============================================================================
+# TAB 7: HILL COPILOT (AI ASSISTANT)
+# =============================================================================
+with tab_copilot:
+    st.markdown("""
+    <div style="background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%); border: 1px solid #312e81; border-radius: 14px; padding: 18px 24px; margin-bottom: 20px;">
+        <div style="display: flex; align-items: center; justify-content: space-between;">
+            <div>
+                <h2 style="color: #ffffff; margin: 0; font-size: 1.5rem; display: flex; align-items: center; gap: 10px;">
+                    🤖 Hill Copilot
+                    <span style="font-size: 0.75rem; background: rgba(59, 130, 246, 0.2); color: #93c5fd; padding: 4px 10px; border-radius: 9999px; border: 1px solid rgba(59, 130, 246, 0.4);">
+                        Hill International Approved
+                    </span>
+                </h2>
+                <p style="color: #94a3b8; margin: 6px 0 0 0; font-size: 0.85rem;">
+                    Official PMC AI Assistant for Ras El Hekma Project Controls & Live Oracle Aconex Database
+                </p>
+            </div>
+            <div style="text-align: right;">
+                <span style="font-size: 0.75rem; color: #10b981; font-weight: 700; background: rgba(16, 185, 129, 0.1); padding: 4px 12px; border-radius: 9999px; border: 1px solid rgba(16, 185, 129, 0.3);">
+                    ● Live DuckDB Connected
+                </span>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if not acs:
+        st.warning("⚠️ AI Chat Service module is not initialized. Please verify configuration.")
+    else:
+        # Initialize chat history
+        if "copilot_messages" not in st.session_state:
+            st.session_state.copilot_messages = [
+                {
+                    "role": "assistant",
+                    "content": "مرحباً بك! أنا **Hill Copilot**، مساعد إدارة المشاريع والتحكم الذكي المعتمد لمشروع **رأس الحكمة**. يمكنك سؤالي باللغة العربية أو الإنجليزية عن أي حزمة تعاقدية، متأخرات الـ RFIs، موقف مراسلات الاستشاريين (شاكر و ECG)، أو طلب تقرير فوري مدعوم بالبيانات الحية من أكونكس."
+                }
+            ]
+
+        # Quick prompt buttons
+        st.markdown("**⚡ استفسارات سريعة مقترحة (Quick Queries):**")
+        q_cols = st.columns(3)
+        preset_query = None
+        with q_cols[0]:
+            if st.button("📋 موقف الـ RFIs المتأخرة في DP02", use_container_width=True, key="btn_q1"):
+                preset_query = "ما هو موقف الـ RFIs المتأخرة في مشروع DP02؟"
+        with q_cols[1]:
+            if st.button("🏛️ تقرير متأخرات إرساليات شاكر و ECG", use_container_width=True, key="btn_q2"):
+                preset_query = "طلعلي ملخص إرساليات شاكر و ECG المتأخرة"
+        with q_cols[2]:
+            if st.button("📊 ملخص المراسلات الحرجة لكل الحزم", use_container_width=True, key="btn_q3"):
+                preset_query = "ملخص المراسلات الحرجة لجميع حزم المشروع"
+
+        # Display chat history
+        for msg in st.session_state.copilot_messages:
+            with st.chat_message(msg["role"], avatar="🤖" if msg["role"] == "assistant" else "👤"):
+                st.markdown(msg["content"])
+
+        # Handle user input
+        chat_val = st.chat_input("اسأل Hill Copilot عن أي تفاصيل أو حزمة في أكونكس...")
+        user_query = chat_val or preset_query
+        if user_query:
+            st.session_state.copilot_messages.append({"role": "user", "content": user_query})
+            with st.chat_message("user", avatar="👤"):
+                st.markdown(user_query)
+
+            with st.chat_message("assistant", avatar="🤖"):
+                with st.spinner("جاري استعلام قاعدة بيانات أكونكس الحية وتحليل الإجابة..."):
+                    response_dict = acs.ask_ai_assistant(user_query)
+                    ans_text = response_dict.get("text", "عذراً، لم أتمكن من الحصول على الإجابة.")
+                    st.markdown(ans_text)
+                    
+                    if response_dict.get("table_headers") and response_dict.get("table_rows"):
+                        df_res = pd.DataFrame(response_dict["table_rows"], columns=response_dict["table_headers"])
+                        st.dataframe(df_res, use_container_width=True, hide_index=True)
+                    
+                    st.session_state.copilot_messages.append({"role": "assistant", "content": ans_text})
+
+# =============================================================================
+# TAB 8: DATA SYNC & TASK SCHEDULER
+# =============================================================================
+with tab_sync:
+    st.markdown("### 🔄 Aconex Automated Pipeline & Micro-Batch Scheduler")
+    st.caption("إدارة خطوط سحب البيانات المؤتمتة، تفعيل النبضات السريعة (Micro-Batching)، وتحديث التعديلات اللحظية في DuckDB.")
+    
+    if not sync_manager:
+        st.error("⚠️ Sync Manager module is not loaded.")
+    else:
+        task_curr = sync_manager.get_task_info()
+        micro_curr = sync_manager.get_micro_batch_info()
+        progress = sync_manager.get_pipeline_progress()
+        is_syncing = sync_manager.is_sync_running()
+        
+        col_kpi1, col_kpi2, col_kpi3, col_kpi4 = st.columns(4)
+        with col_kpi1:
+            st.metric("Pipeline State", "🟢 Ready (Idle)" if not is_syncing else "⚡ Syncing...")
+        with col_kpi2:
+            st.metric("⚡ Micro-Batch (Business Hours)", "Active 🟢" if micro_curr.get("enabled") else "Paused ⏸️", f"Every {micro_curr.get('interval_mins', 60)} min")
+        with col_kpi3:
+            st.metric("🌙 Daily Baseline Sync", task_curr.get("at_time", "05:00"), f"Next: {task_curr.get('next_run', 'N/A')[:10]}")
+        with col_kpi4:
+            st.metric("Last Sync Time", progress.get("last_run", "N/A"))
+            
+        st.markdown("---")
+        
+        st.markdown("#### ⚡ مركز التشغيل الفوري المباشر (On-Demand Execution)")
+        col_act1, col_act2, col_act3 = st.columns([1.3, 1.3, 1])
+        
+        with col_act1:
+            if st.button("⚡ Run Quick Delta Sync Now (تحديث دلتا لحظي سريع - 45s)", use_container_width=True, type="primary", key="tab_run_delta"):
+                sync_manager.run_immediate_delta_sync_in_background()
+                st.toast("⚡ تم إطلاق سحب الدلتا السريع ودمج التعديلات بالخلفية!", icon="⚡")
+                st.rerun()
+            st.caption("يسحب التعديلات الحديثة في الورك فلو والعمليات فقط ويدمجها في ثوانٍ دون إعادة بناء القاعدة.")
+            
+        with col_act2:
+            if st.button("🔄 Run Full Deep Extraction (تحديث شامل كامل - 12m)", use_container_width=True, key="tab_run_full"):
+                sync_manager.run_immediate_sync_in_background(mode="full")
+                st.toast("🚀 تم إطلاق التحديث الشامل لكافة حزم أكونكس بالخلفية!", icon="🚀")
+                st.rerun()
+            st.caption("يسحب كافة السجلات (المستندات 400k والرسائل) لتحديث الأساس الشامل للمشروع.")
+            
+        with col_act3:
+            if st.button("📊 Reload DuckDB Cache (تفريغ الكاش)", use_container_width=True, key="tab_reload_db"):
+                st.cache_resource.clear()
+                st.success("تم تحديث ذاكرة التطبيق وقراءة جداول DuckDB بنجاح! ✅")
+                st.rerun()
+            st.caption("يقوم بقراءة أحدث التغييرات المدمجة في DuckDB وتحديث الرسوم البيانية فوراً.")
+                
+        st.markdown("---")
+        
+        col_sched1, col_sched2 = st.columns([1, 1])
+        
+        with col_sched1:
+            st.markdown("#### ⚙️ إعدادات النبضات السريعة (Micro-Batching Settings)")
+            st.markdown("""
+            تعمل النبضات السريعة تلقائياً خلال **ساعات العمل الرسمية (من 08:00 صباحاً حتى 06:00 مساءً)** 
+            لسحب أي اعتمادات أو ترانسميتالات أو RFIs جديدة وتحديثها لايف فوراً.
+            """)
+            
+            mb_enabled = st.toggle("تفعيل التحديث التلقائي الدوري في ساعات العمل", value=micro_curr.get("enabled", False), key="mb_toggle")
+            
+            interval_options = [30, 60, 120]
+            curr_int = micro_curr.get("interval_mins", 60)
+            int_idx = interval_options.index(curr_int) if curr_int in interval_options else 1
+            selected_interval = st.selectbox("معدل التكرار (Interval):", interval_options, index=int_idx, format_func=lambda x: f"كل {x} دقيقة", key="mb_interval")
+            
+            if st.button("💾 حفظ وتطبيق إعدادات النبضات السريعة", use_container_width=True, key="save_micro_batch"):
+                ok, msg = sync_manager.update_micro_batch_schedule(enabled=mb_enabled, interval_minutes=selected_interval)
+                if ok:
+                    st.success(msg)
+                    st.rerun()
+                else:
+                    st.error(msg)
+                    
+        with col_sched2:
+            st.markdown("#### 🌙 إعدادات الصيانة اليومية الشاملة (Daily Baseline Maintenance)")
+            st.markdown("""
+            تعمل مرة واحدة فجراً لعمل فحص شامل ومطابقة لكافة حزم أكونكس ومستندات المشروع وتحديث الأرشيف بالكامل.
+            """)
+            
+            current_time_str = task_curr.get("at_time", "05:00")
+            try:
+                cur_h, cur_m = [int(x) for x in current_time_str.split(":")]
+            except Exception:
+                cur_h, cur_m = 5, 0
+                
+            t_input = st.time_input("توقيت التشغيل اليومي (24h):", value=datetime.strptime(f"{cur_h:02d}:{cur_m:02d}", "%H:%M").time(), key="tab_daily_time")
+            if st.button("💾 حفظ توقيت الصيانة اليومية", use_container_width=True, key="save_daily_sched"):
+                formatted_time = t_input.strftime("%H:%M")
+                ok, m = sync_manager.update_task_schedule(formatted_time, enabled=True)
+                if ok:
+                    st.success(f"تم ضبط التحديث اليومي الشامل على الساعة {formatted_time} صباحاً! ✅")
+                    st.rerun()
+                else:
+                    st.error(m)
+                    
+        st.markdown("---")
+        st.markdown("#### 📜 سجلات التنفيذ الحية (Live Execution Logs - `sync_live.log`)")
+        log_content = sync_manager.get_sync_logs(max_lines=50)
+        st.code("\n".join(log_content) if isinstance(log_content, list) else log_content, language="bash")
+        if st.button("🔄 تحديث عرض السجلات", key="tab_refresh_logs"):
+            st.rerun()

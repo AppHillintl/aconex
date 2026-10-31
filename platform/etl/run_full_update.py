@@ -207,7 +207,21 @@ def main():
     # 4. Multi-Core Ingestion of Document Register Excel Files (391k docs)
     # -------------------------------------------------------------------------
     print("\n[4/6] Parallel Ingestion of Document Register Excel Files with Hyperlinks...")
-    excel_files = sorted(glob.glob(os.path.join(UP_DIR, "ExportDocs-20261011_13-48_*.xlsx")))
+    # Dynamically find the latest ExportDocs prefix that has valid parts
+    all_docs = glob.glob(os.path.join(UP_DIR, "ExportDocs-*.xlsx"))
+    valid_prefixes = []
+    for f in all_docs:
+        m = re.findall(r"ExportDocs-\d+_\d+-\d+", f)
+        if m:
+            pref = m[0]
+            parts = glob.glob(os.path.join(UP_DIR, f"{pref}_*.xlsx"))
+            if len(parts) > 0 and pref not in valid_prefixes:
+                valid_prefixes.append(pref)
+    valid_prefixes.sort()
+    latest_prefix = valid_prefixes[-1] if valid_prefixes else None
+    excel_files = sorted(glob.glob(os.path.join(UP_DIR, f"{latest_prefix}_*.xlsx"))) if latest_prefix else []
+    if latest_prefix:
+        print(f"  Selected latest Document Register set: {latest_prefix} ({len(excel_files)} parts)")
     if excel_files:
         tasks = []
         out_csvs = []
@@ -226,8 +240,16 @@ def main():
         
         # Load CSVs into doc_aconex_links in DuckDB
         csv_list_sql = ", ".join([f"'{c.replace(chr(92), '/')}'" for c in out_csvs])
+        try:
+            con.execute("DROP VIEW IF EXISTS doc_aconex_links;")
+        except Exception:
+            pass
+        try:
+            con.execute("DROP TABLE IF EXISTS doc_aconex_links;")
+        except Exception:
+            pass
         con.execute("""
-        CREATE OR REPLACE TABLE doc_aconex_links (
+        CREATE TABLE doc_aconex_links (
             document_no VARCHAR,
             revision VARCHAR,
             title VARCHAR,
@@ -444,6 +466,24 @@ def main():
             print(f"  Could not remove Mail Thread (2).csv: {e}")
             
     con.close()
+
+    # Ingest / update all Aconex mails and live hyperlinks
+    try:
+        import ingest_all_mails
+        ingest_all_mails.main()
+    except Exception as e:
+        print(f"  [ERROR] Failed to run mail ingestion: {e}")
+
+    # -------------------------------------------------------------------------
+    # 7. Project Packages Classification & Summary Views Enrichment
+    # -------------------------------------------------------------------------
+    print("\n[7/7] Running Project Packages Classification & Summary Enrichment...")
+    try:
+        import classify_and_enrich_db
+        classify_and_enrich_db.run_enrichment()
+    except Exception as e:
+        print(f"  [ERROR] Failed to run classification & enrichment: {e}")
+
     print("\n" + "=" * 80)
     print(f"ALL UPDATES SUCCESSFULLY COMPLETED IN {time.time()-t_global:.2f}s!")
     print("=" * 80)

@@ -71,9 +71,6 @@ def get_hill_team_summary(package_filter: str = None) -> list:
     user_map = get_hill_directory_users()
     try:
         where_wf = "WHERE s.assigned_to_organization ILIKE '%Hill%' AND s.step_status IN ('Overdue', 'Current')"
-        if package_filter and package_filter != 'all':
-            clean_pkg = package_filter.replace("'", "''")
-            where_wf += f" AND w.project_package = '{clean_pkg}'"
 
         steps = con.execute(f"""
             SELECT 
@@ -83,10 +80,11 @@ def get_hill_team_summary(package_filter: str = None) -> list:
                 s.assigned_to_name,
                 s.days_late,
                 s.is_overdue,
-                w.workflow_name,
-                w.project_package
+                COALESCE(w.workflow_name, s.workflow_no),
+                s.document_no,
+                s.document_title
             FROM fact_workflow_steps s
-            JOIN fact_workflows w ON s.workflow_no = w.workflow_no
+            LEFT JOIN fact_workflows w ON s.workflow_no = w.workflow_no
             {where_wf}
         """).fetchall()
 
@@ -106,7 +104,10 @@ def get_hill_team_summary(package_filter: str = None) -> list:
 
         # 1. Process review steps
         for row in steps:
-            wf_no, s_name, s_status, raw_assignees, days_late, is_overdue, wf_name, pkg = row
+            wf_no, s_name, s_status, raw_assignees, days_late, is_overdue, wf_name, doc_no, doc_title = row
+            pkg = pr.resolve_project_package(doc_no=doc_no, title=doc_title)
+            if package_filter and package_filter != 'all' and pkg != package_filter:
+                continue
             parts = [p.strip() for p in (raw_assignees or "").split(',') if p.strip()]
             for p in parts:
                 matched = match_hill_engineer(p, user_map)
@@ -201,9 +202,6 @@ def get_hill_engineer_dossier(engineer_name: str, package_filter: str = None) ->
 
     try:
         where_wf = "WHERE s.assigned_to_organization ILIKE '%Hill%' AND s.step_status IN ('Overdue', 'Current')"
-        if package_filter and package_filter != 'all':
-            clean_pkg = package_filter.replace("'", "''")
-            where_wf += f" AND w.project_package = '{clean_pkg}'"
 
         steps = con.execute(f"""
             SELECT 
@@ -215,21 +213,31 @@ def get_hill_engineer_dossier(engineer_name: str, package_filter: str = None) ->
                 s.document_title,
                 s.days_late,
                 s.is_overdue,
-                w.workflow_name,
-                w.project_package,
+                COALESCE(w.workflow_name, s.workflow_no),
                 w.start_date::VARCHAR,
                 w.original_due_date::VARCHAR,
                 s.date_in::VARCHAR,
                 s.date_due::VARCHAR,
-                'https://mea.aconex.com/WorkflowSearch?searchtext=' || s.workflow_no || '&projectid=1744833878' AS aconex_url
+                'https://mea.aconex.com/WorkflowSearch?searchtext=' || s.workflow_no || '&projectid=1744833878' AS aconex_url,
+                CASE 
+                    WHEN d.document_id IS NOT NULL AND LENGTH(TRIM(d.document_id)) > 3 AND d.document_id != 'None'
+                    THEN 'https://mea.aconex.com/ViewDoc?trackingid=' || d.document_id || '&projectid=1744833878&docno=' || s.document_no || '&username=aabdelrahim4&action=ViewDocumentSummary'
+                    ELSE 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=DOC-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=documentNumber%3A%22' || COALESCE(s.document_no, '') || '%22'
+                END AS doc_aconex_url
             FROM fact_workflow_steps s
-            JOIN fact_workflows w ON s.workflow_no = w.workflow_no
+            LEFT JOIN fact_workflows w ON s.workflow_no = w.workflow_no
+            LEFT JOIN (SELECT document_no, MAX(tracking_id) as document_id, MAX(aconex_url) as doc_direct_url FROM dim_documents GROUP BY document_no) d ON s.document_no = d.document_no
             {where_wf}
             ORDER BY s.is_overdue DESC, s.days_late DESC NULLS LAST, s.date_in DESC
         """).fetchall()
 
         matched_steps = []
         for r in steps:
+            doc_no = r[4]
+            doc_title = r[5]
+            pkg = pr.resolve_project_package(doc_no=doc_no, title=doc_title)
+            if package_filter and package_filter != 'all' and pkg != package_filter:
+                continue
             raw_assignees = r[3] or ""
             parts = [p.strip() for p in raw_assignees.split(',') if p.strip()]
             is_hit = False
@@ -249,11 +257,13 @@ def get_hill_engineer_dossier(engineer_name: str, package_filter: str = None) ->
                     "days_late": r[6] or 0,
                     "is_overdue": r[7],
                     "workflow_name": r[8],
-                    "package": r[9] or "Unassigned",
-                    "start_date": r[10][:10] if r[10] else None,
-                    "due_date": r[11][:10] if r[11] else (r[13][:10] if r[13] else None),
-                    "date_in": r[12][:10] if r[12] else None,
-                    "aconex_url": r[14]
+                    "package": pkg or "Unassigned",
+                    "start_date": r[9][:10] if r[9] else None,
+                    "due_date": r[10][:10] if r[10] else (r[12][:10] if r[12] else None),
+                    "date_due": r[10][:10] if r[10] else (r[12][:10] if r[12] else None),
+                    "date_in": r[11][:10] if r[11] else None,
+                    "aconex_url": r[13],
+                    "doc_aconex_url": r[14] if len(r) > 14 else r[13]
                 })
 
         # Direct Mails
@@ -266,7 +276,7 @@ def get_hill_engineer_dossier(engineer_name: str, package_filter: str = None) ->
             SELECT 
                 mail_no, mail_type, subject, reference_number, from_organization,
                 recipients, status, sent_date::VARCHAR, due_date::VARCHAR, days_late, project_package,
-                COALESCE(aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A' || mail_no) AS aconex_url
+                COALESCE(aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A%22' || mail_no || '%22') AS aconex_url
             FROM fact_mail
             {where_mail}
             ORDER BY days_late DESC NULLS LAST, sent_date DESC
@@ -400,12 +410,13 @@ tr:hover {{ background-color: #f8fafc; }}
         <table>
             <thead>
                 <tr>
-                    <th style="width: 14%;">Workflow No</th>
+                    <th style="width: 13%;">Workflow No</th>
+                    <th style="width: 16%;">Document No</th>
                     <th style="width: 10%;">Package</th>
-                    <th style="width: 20%;">Step Name</th>
-                    <th style="width: 32%;">Workflow / Submittal Title</th>
-                    <th style="width: 12%;">Due Date</th>
-                    <th style="width: 12%;">Delay</th>
+                    <th style="width: 16%;">Step Name</th>
+                    <th style="width: 25%;">Workflow / Submittal Title</th>
+                    <th style="width: 10%;">Due Date</th>
+                    <th style="width: 10%;">Delay</th>
                 </tr>
             </thead>
             <tbody>
@@ -414,9 +425,10 @@ tr:hover {{ background-color: #f8fafc; }}
             html += f"""
                 <tr>
                     <td><a href="{s['aconex_url']}" target="_blank" class="aconex-link">{s['workflow_no']}</a></td>
+                    <td><a href="{s.get('doc_aconex_url', s['aconex_url'])}" target="_blank" class="aconex-link">{s.get('document_no') or '-'}</a></td>
                     <td><strong style="color: #0369a1;">{s['package']}</strong></td>
                     <td style="font-weight: 600;">{s['step_name']}</td>
-                    <td>{s['workflow_name']}</td>
+                    <td>{s.get('document_title') or s['workflow_name']}</td>
                     <td style="font-family: monospace;">{s['due_date'] or '-'}</td>
                     <td><span class="badge-late">+{s['days_late']} days</span></td>
                 </tr>
@@ -459,10 +471,11 @@ tr:hover {{ background-color: #f8fafc; }}
             <thead>
                 <tr>
                     <th style="width: 14%;">Workflow No</th>
+                    <th style="width: 18%;">Document No</th>
                     <th style="width: 10%;">Package</th>
-                    <th style="width: 22%;">Step Name</th>
-                    <th style="width: 38%;">Workflow Title</th>
-                    <th style="width: 16%;">Due Date</th>
+                    <th style="width: 18%;">Step Name</th>
+                    <th style="width: 28%;">Workflow Title</th>
+                    <th style="width: 12%;">Due Date</th>
                 </tr>
             </thead>
             <tbody>
@@ -471,9 +484,10 @@ tr:hover {{ background-color: #f8fafc; }}
             html += f"""
                 <tr>
                     <td><a href="{s['aconex_url']}" target="_blank" class="aconex-link">{s['workflow_no']}</a></td>
+                    <td><a href="{s.get('doc_aconex_url', s['aconex_url'])}" target="_blank" class="aconex-link">{s.get('document_no') or '-'}</a></td>
                     <td><strong style="color: #0369a1;">{s['package']}</strong></td>
                     <td style="font-weight: 600;">{s['step_name']}</td>
-                    <td>{s['workflow_name']}</td>
+                    <td>{s.get('document_title') or s['workflow_name']}</td>
                     <td style="font-family: monospace;">{s['due_date'] or '-'}</td>
                 </tr>
             """
@@ -513,8 +527,10 @@ def generate_hill_engineer_excel(engineer_name: str, package_filter: str = None)
     ws.append([f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", f"Total Items: {dossier['summary']['total_items']} ({dossier['summary']['total_overdue']} Overdue)"])
     ws.append([])
 
+    link_font = Font(name="Arial", size=10, bold=True, color="0284C7", underline="single")
+
     # Table Header
-    headers = ["Deliverable No", "Item Type", "Package", "Step / Status", "Subject / Title", "Date In", "Due Date", "Days Late", "Aconex Link"]
+    headers = ["Deliverable No", "Document / Ref No", "Item Type", "Package", "Step / Status", "Subject / Title", "Date In", "Due Date", "Days Late", "Aconex Link"]
     ws.append(headers)
     for col in range(1, len(headers) + 1):
         c = ws.cell(5, col)
@@ -527,24 +543,39 @@ def generate_hill_engineer_excel(engineer_name: str, package_filter: str = None)
     for s in dossier["steps"]:
         ws.append([
             s["workflow_no"],
+            s.get("document_no") or "-",
             "Workflow Review",
             s["package"],
             s["step_name"],
-            s["workflow_name"],
+            s.get("document_title") or s["workflow_name"],
             s["date_in"] or "",
             s["due_date"] or "",
             s["days_late"] if s["is_overdue"] else 0,
-            s["aconex_url"]
+            "Open in Aconex"
         ])
+        c1 = ws.cell(row_idx, 1)
+        c1.hyperlink = s["aconex_url"]
+        c1.font = link_font
+
+        c2 = ws.cell(row_idx, 2)
+        if s.get("document_no") and s.get("document_no") != "-":
+            c2.hyperlink = s.get("doc_aconex_url", s["aconex_url"])
+            c2.font = link_font
+
+        c10 = ws.cell(row_idx, 10)
+        c10.hyperlink = s.get("doc_aconex_url", s["aconex_url"])
+        c10.font = link_font
+
         if s["is_overdue"]:
-            ws.cell(row_idx, 8).fill = late_fill
-            ws.cell(row_idx, 8).font = late_font
+            ws.cell(row_idx, 9).fill = late_fill
+            ws.cell(row_idx, 9).font = late_font
         row_idx += 1
 
     # Mails
     for m in dossier["mails"]:
         ws.append([
             m["mail_no"],
+            m.get("ref_no") or m["mail_no"],
             m["mail_type"],
             m["package"],
             m["status"],
@@ -552,10 +583,18 @@ def generate_hill_engineer_excel(engineer_name: str, package_filter: str = None)
             m["sent_date"] or "",
             m["due_date"] or "",
             m["days_late"],
-            m["aconex_url"]
+            "Open in Aconex"
         ])
-        ws.cell(row_idx, 8).fill = late_fill
-        ws.cell(row_idx, 8).font = late_font
+        c1 = ws.cell(row_idx, 1)
+        c1.hyperlink = m["aconex_url"]
+        c1.font = link_font
+
+        c10 = ws.cell(row_idx, 10)
+        c10.hyperlink = m["aconex_url"]
+        c10.font = link_font
+
+        ws.cell(row_idx, 9).fill = late_fill
+        ws.cell(row_idx, 9).font = late_font
         row_idx += 1
 
     # Column widths
@@ -581,6 +620,7 @@ def generate_hill_engineer_eml(engineer_name: str, package_filter: str = None) -
     target_email = dossier["engineer"]["email"] or "pmc-controls@hillintl.com"
     msg["To"] = target_email
     msg["CC"] = "DeanEnglish@hillintl.com"
+    msg["X-Unsent"] = "1"
 
     msg.set_content(
         f"Dear {dossier['engineer']['name']},\n\n"

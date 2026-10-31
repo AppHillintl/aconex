@@ -173,7 +173,8 @@ def run_enrichment():
             WHEN from_name ILIKE '%Hany Youssef%' THEN 'DP01'
 
             -- 7. Specialized Plants: RO Plant (3045, OTC, Trojan), STP (3046), MMS (3044)
-            WHEN regexp_matches(subject || ' ' || reference_number || ' ' || mail_no || ' ' || from_organization, '(?i)(3045|K03045|Trojan|COX\s*JV|RO\s*Plant|Desalination|\bOTC\b)') OR mail_no LIKE 'OTC-%' THEN 'RO Plant'
+            WHEN (regexp_matches(subject || ' ' || reference_number || ' ' || mail_no || ' ' || from_organization, '(?i)(3045|K03045|Trojan|COX\s*JV|RO\s*Plant|Desalination|\bOTC\b)') OR mail_no LIKE 'OTC-%')
+                 AND NOT regexp_matches(subject || ' ' || reference_number || ' ' || mail_no, '(?i)(3049|Airport)') THEN 'RO Plant'
             WHEN regexp_matches(subject || ' ' || reference_number || ' ' || mail_no || ' ' || from_organization, '(?i)(3044|K03044|EETD|\bMMS\b|Substation|Sewedy)') OR mail_no LIKE 'EERM-%' THEN 'MMS / Substation'
             WHEN regexp_matches(subject || ' ' || reference_number || ' ' || mail_no, '(?i)(3046|K03046|P5576|Sewage\s*Treatment|\bSTP\b)') THEN 'STP'
             WHEN from_organization ILIKE '%Hassan Allam%' AND (recipients ILIKE '%Ayman Elsherif%' OR from_name ILIKE '%Ayman Elsherif%') AND subject ILIKE '%3046%' THEN 'STP'
@@ -211,6 +212,30 @@ def run_enrichment():
         END;
     """)
     print(f"fact_mail enriched in {time.time() - t0:.2f} seconds!")
+
+    print("\n--- 3.1 Applying Contractual 14-Day Overdue Rule for Letters ---")
+    t_let = time.time()
+    con.execute("""
+    UPDATE fact_mail
+    SET 
+        due_date = COALESCE(due_date, sent_date + INTERVAL 14 DAY),
+        is_overdue = CASE 
+            WHEN status IN ('Closed-Out', 'Responded') THEN FALSE
+            WHEN mail_no IN (SELECT mail_no FROM fact_mail_responses) THEN FALSE
+            WHEN COALESCE(due_date, sent_date + INTERVAL 14 DAY) < CURRENT_TIMESTAMP THEN TRUE
+            ELSE FALSE
+        END,
+        days_late = CASE 
+            WHEN status IN ('Closed-Out', 'Responded') THEN 0
+            WHEN mail_no IN (SELECT mail_no FROM fact_mail_responses) THEN 0
+            WHEN COALESCE(due_date, sent_date + INTERVAL 14 DAY) < CURRENT_TIMESTAMP 
+                THEN DATEDIFF('day', COALESCE(due_date, sent_date + INTERVAL 14 DAY), CURRENT_TIMESTAMP)
+            ELSE 0
+        END
+    WHERE mail_type = 'Letter';
+    """)
+    ov_cnt = con.execute("SELECT count(*) FROM fact_mail WHERE mail_type = 'Letter' AND is_overdue = TRUE").fetchone()[0]
+    print(f"14-Day SLA Overdue rule applied to all letters ({ov_cnt:,} overdue letters) in {time.time() - t_let:.2f}s!")
 
     print("\n--- 4. Enriching dim_documents (Exact Contract & Logics Hierarchy) ---")
     add_col_if_missing("dim_documents", "project_package", "VARCHAR")
@@ -366,7 +391,7 @@ def run_enrichment():
             project_package, 
             count(*) AS total_mails,
             count(CASE WHEN is_overdue THEN 1 END) AS overdue_mails,
-            count(CASE WHEN mail_type ILIKE '%Letter%' THEN 1 END) AS total_letters,
+            count(CASE WHEN mail_type ILIKE '%Letter%' AND from_organization NOT ILIKE '%Hill Inter%' THEN 1 END) AS total_letters,
             count(CASE WHEN mail_type ILIKE '%Transmittal%' THEN 1 END) AS total_transmittals
         FROM fact_mail
         GROUP BY project_package

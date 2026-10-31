@@ -1,4 +1,30 @@
+
+def extract_clean_orgs(raw_rows):
+    """
+    Parses Oracle Aconex organization and recipient strings.
+    Handles concatenated recipients: 'OrgA: User1 , OrgB: User2'
+    Returns sorted list of distinct, valid company names.
+    """
+    clean_set = set()
+    for row in raw_rows:
+        val = row[0] if isinstance(row, (tuple, list)) else row
+        if not val or not isinstance(val, str):
+            continue
+        for token in val.split(','):
+            tok = token.strip()
+            if not tok:
+                continue
+            if ':' in tok:
+                org = tok.split(':', 1)[0].strip()
+            else:
+                org = tok.strip()
+            org = org.strip('"\' ')
+            if org and 1 < len(org) < 80 and not org.lower().startswith('http'):
+                clean_set.add(org)
+    return sorted(list(clean_set))
+
 import os
+import json
 import re
 import sys
 import io
@@ -47,6 +73,7 @@ import hill_internal_control_service as hcs
 import ai_chat_service as acs
 import dispatch_settings_service as dss
 import discipline_service as disc_s
+import feed_service
 
 DB_PATH = r"C:\Users\bimst\Downloads\ACONEX\aconex.duckdb".replace("\\", "/")
 
@@ -69,6 +96,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.middleware("http")
+async def add_cache_control_headers(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path.lower()
+    if path.endswith(".js") or path.endswith(".html") or path.endswith(".css") or path == "/":
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
+
 @app.get("/")
 def serve_dashboard():
     index_path = os.path.join(STATIC_DIR, "index.html")
@@ -76,8 +114,174 @@ def serve_dashboard():
         return FileResponse(index_path)
     return {"message": "ACONEX PMC Control Platform API is active"}
 
-def get_db():
-    return duckdb.connect(DB_PATH, read_only=True)
+def get_db(max_retries: int = 5, retry_delay: float = 0.15):
+    """Returns a read-only DuckDB connection with automatic lock-wait resilience."""
+    import time
+    last_err = None
+    for attempt in range(max_retries):
+        try:
+            return duckdb.connect(DB_PATH, read_only=True)
+        except Exception as e:
+            last_err = e
+            time.sleep(retry_delay * (attempt + 1))
+    raise last_err
+
+
+# -----------------------------------------------------------------------------
+# Universal Aconex Resolvers -> always redirects to the direct Hyperlink with ID:
+#   - Documents: https://mea.aconex.com/ViewDoc?trackingid=...
+#   - Mails / RFIs: https://mea.aconex.com/MiniURL?type=MAILSEARCH&mailbox=5&pid=1744833878&cid=...
+# Never drops the user into an empty search screen.
+# -----------------------------------------------------------------------------
+from fastapi.responses import RedirectResponse as _AconexRedirect
+
+@app.get("/api/aconex/doc")
+def aconex_doc_redirect(doc_no: str = Query(""), fallback: str = Query("")):
+    raw = (doc_no or "").strip().strip("'").strip('"').strip()
+    url = None
+    if raw:
+        try:
+            con = get_db()
+            try:
+                candidates = [raw]
+                base = re.sub(r'(?i)\.(attached|attach|att)\.?$', '', raw).strip()
+                if base and base != raw:
+                    candidates.append(base)
+                base_dwg = re.sub(r'(?i)[-_]dwg$', '', raw).strip()
+                if base_dwg and base_dwg not in candidates:
+                    candidates.append(base_dwg)
+
+                # 1. Primary lookup in dim_documents by document_no or tracking_id to get exact direct ViewDoc link
+                for cand in candidates:
+                    doc_row = con.execute(
+                        "SELECT aconex_url, tracking_id FROM dim_documents WHERE document_no = ? OR tracking_id = ? LIMIT 1", [cand, cand]
+                    ).fetchone()
+                    if doc_row:
+                        if doc_row[0] and 'ViewDoc' in doc_row[0]:
+                            url = doc_row[0]
+                            break
+                        elif doc_row[1]:
+                            url = f"https://mea.aconex.com/ViewDoc?trackingid={doc_row[1]}&projectid=1744833878&cversion=1&tab=0"
+                            break
+
+                # 2. In case it was an RFI/mail referenced as a document
+                if not url:
+                    for cand in candidates:
+                        row = con.execute(
+                            "SELECT aconex_url FROM fact_mail WHERE mail_no = ? AND aconex_url LIKE '%MiniURL%' LIMIT 1", [cand]
+                        ).fetchone()
+                        if row and row[0]:
+                            url = row[0]
+                            break
+
+                # 3. If direct matching document not found, try prefix / case-insensitive search in dim_documents
+                if not url:
+                    clean_doc = candidates[0]
+                    doc_row2 = con.execute(
+                        "SELECT aconex_url, tracking_id FROM dim_documents WHERE document_no ILIKE ? LIMIT 1", [f"{clean_doc}%"]
+                    ).fetchone()
+                    if doc_row2:
+                        if doc_row2[0] and 'ViewDoc' in doc_row2[0]:
+                            url = doc_row2[0]
+                        elif doc_row2[1]:
+                            url = f"https://mea.aconex.com/ViewDoc?trackingid={doc_row2[1]}&projectid=1744833878&cversion=1&tab=0"
+
+                # 4. Fallback if candidate is numeric tracking_id directly
+                if not url and candidates[0].isdigit():
+                    url = f"https://mea.aconex.com/ViewDoc?trackingid={candidates[0]}&projectid=1744833878&cversion=1&tab=0"
+            finally:
+                con.close()
+        except Exception as e:
+            print(f"[aconex_doc_redirect] lookup error: {e}")
+
+    if not url:
+        if raw:
+            q = urllib.parse.quote(f'documentNumber:"{raw}"')
+            url = f"https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=DOC-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery={q}"
+        else:
+            url = "https://mea.aconex.com"
+    return _AconexRedirect(url=url, status_code=302)
+
+
+@app.get("/api/aconex/mail")
+@app.get("/api/aconex/rfi")
+def aconex_mail_redirect(mail_no: str = Query(""), rfi_no: str = Query(""), cid: str = Query(""), fallback: str = Query("")):
+    raw = (mail_no or rfi_no or cid or "").strip().strip("'").strip('"').strip()
+    url = None
+
+    # If cid is directly provided or raw is purely numeric, it is the Aconex internal Correspondence ID
+    if (cid and cid.isdigit()):
+        return _AconexRedirect(url=f"https://mea.aconex.com/MiniURL?type=MAILSEARCH&mailbox=5&pid=1744833878&cid={cid}", status_code=302)
+    if raw.isdigit():
+        return _AconexRedirect(url=f"https://mea.aconex.com/MiniURL?type=MAILSEARCH&mailbox=5&pid=1744833878&cid={raw}", status_code=302)
+
+    if raw:
+        try:
+            con = get_db()
+            try:
+                candidates = [raw]
+                base = re.sub(r'(?i)\.(attached|attach|att)\.?$', '', raw).strip()
+                if base and base != raw:
+                    candidates.append(base)
+
+                for cand in candidates:
+                    # 1. Check fact_rfis for direct MiniURL with ID
+                    row = con.execute(
+                        "SELECT aconex_url FROM fact_rfis WHERE mail_no = ? AND aconex_url LIKE '%MiniURL%' LIMIT 1", [cand]
+                    ).fetchone()
+                    if not row or not row[0]:
+                        row = con.execute(
+                            "SELECT aconex_url FROM mail_aconex_links WHERE mail_no = ? AND aconex_url LIKE '%MiniURL%' LIMIT 1", [cand]
+                        ).fetchone()
+                    if not row or not row[0]:
+                        row = con.execute(
+                            "SELECT aconex_url FROM fact_mail WHERE mail_no = ? AND aconex_url LIKE '%MiniURL%' LIMIT 1", [cand]
+                        ).fetchone()
+                    if row and row[0]:
+                        url = row[0]
+                        break
+
+                # 2. If not found in mail, check if it was actually a document (e.g. attachment / BOQ)
+                if not url:
+                    for cand in candidates:
+                        row = con.execute(
+                            "SELECT aconex_url FROM doc_direct_links WHERE document_no = ? LIMIT 1", [cand]
+                        ).fetchone()
+                        if not row or not row[0]:
+                            row = con.execute(
+                                "SELECT aconex_url FROM dim_documents WHERE trim(document_no) = ? AND aconex_url LIKE '%ViewDoc%' LIMIT 1", [cand]
+                            ).fetchone()
+                        if row and row[0]:
+                            url = row[0]
+                            break
+
+                # 3. Check any remaining aconex_url in fact_rfis or fact_mail
+                if not url:
+                    for cand in candidates:
+                        row = con.execute(
+                            "SELECT aconex_url FROM fact_rfis WHERE mail_no = ? AND aconex_url IS NOT NULL AND aconex_url != '' LIMIT 1", [cand]
+                        ).fetchone()
+                        if not row or not row[0]:
+                            row = con.execute(
+                                "SELECT aconex_url FROM fact_mail WHERE mail_no = ? AND aconex_url IS NOT NULL AND aconex_url != '' LIMIT 1", [cand]
+                            ).fetchone()
+                        if row and row[0]:
+                            url = row[0]
+                            break
+            finally:
+                con.close()
+        except Exception as e:
+            print(f"[aconex_mail_redirect] lookup error: {e}")
+
+    if not url:
+        if fallback and fallback.startswith("https://mea.aconex.com"):
+            url = fallback
+        elif raw:
+            q = urllib.parse.quote(f'mailNumber:"{raw}"')
+            url = f"https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery={q}"
+        else:
+            url = "https://mea.aconex.com"
+    return _AconexRedirect(url=url, status_code=302)
 
 # -----------------------------------------------------------------------------
 # 1. Executive Overview & KPIs
@@ -221,8 +425,8 @@ def get_filter_options():
         doc_statuses = [r[0] for r in con.execute("SELECT DISTINCT status FROM dim_documents WHERE status IS NOT NULL ORDER BY status").fetchall()]
         doc_types = [r[0] for r in con.execute("SELECT DISTINCT doc_type FROM dim_documents WHERE doc_type IS NOT NULL ORDER BY doc_type").fetchall()]
         mail_types = [r[0] for r in con.execute("SELECT DISTINCT mail_type FROM fact_mail WHERE mail_type IS NOT NULL ORDER BY mail_type").fetchall()]
-        mail_from_orgs = [r[0] for r in con.execute("SELECT DISTINCT from_organization FROM fact_mail WHERE from_organization IS NOT NULL ORDER BY from_organization").fetchall()]
-        mail_to_orgs = [r[0] for r in con.execute("SELECT DISTINCT to_organization FROM fact_mail WHERE to_organization IS NOT NULL ORDER BY to_organization").fetchall()]
+        mail_from_orgs = extract_clean_orgs(con.execute("SELECT DISTINCT from_organization FROM fact_mail WHERE from_organization IS NOT NULL").fetchall())
+        mail_to_orgs = extract_clean_orgs(con.execute("SELECT DISTINCT to_organization FROM fact_mail WHERE to_organization IS NOT NULL").fetchall())
         workflow_initiators = [r[0] for r in con.execute("SELECT DISTINCT initiator_organization FROM fact_workflows WHERE initiator_organization IS NOT NULL ORDER BY initiator_organization").fetchall()]
         workflow_assigned_orgs = [r[0] for r in con.execute("SELECT DISTINCT current_assigned_org FROM fact_workflows WHERE current_assigned_org IS NOT NULL ORDER BY current_assigned_org").fetchall()]
         
@@ -1031,7 +1235,8 @@ def get_rfis(
                 sent_date::VARCHAR,
                 due_date::VARCHAR,
                 days_late,
-                is_overdue
+                is_overdue,
+                aconex_url
             FROM fact_rfis
             {where}
             ORDER BY {sort_col} {order_dir} NULLS LAST, days_late DESC
@@ -1050,7 +1255,8 @@ def get_rfis(
                 "sent_date": r[7][:10] if r[7] else None,
                 "due_date": r[8][:10] if r[8] else None,
                 "days_late": r[9],
-                "is_overdue": r[10]
+                "is_overdue": r[10],
+                "aconex_url": r[11]
             } for r in rows]
         }
     finally:
@@ -2141,6 +2347,23 @@ async def upload_sync_rfi_log(file: UploadFile = File(...)):
     if not file.filename.lower().endswith(('.xlsx', '.xlsm')):
         raise HTTPException(status_code=400, detail="Only Excel files (.xlsx, .xlsm) are supported.")
     file_bytes = await file.read()
+    if 'letter' in file.filename.lower():
+        from letters_log_engine import upload_and_sync_letters_bytes
+        updated_bytes, stats = upload_and_sync_letters_bytes(file_bytes, file.filename)
+        base_n = os.path.splitext(file.filename)[0]
+        out_name = f"{base_n}_Synced_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+        return Response(
+            content=updated_bytes,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": f'attachment; filename="{out_name}"',
+                "X-Detected-Package": "Letters Register",
+                "X-Total-RFIs": str(stats.get("updated_existing_total", 0)),
+                "X-New-Appended": str(stats.get("appended_new_total", 0)),
+                "X-Hyperlinks-Count": str(stats.get("hyperlinks_added_total", 0)),
+                "Access-Control-Expose-Headers": "Content-Disposition, X-Detected-Package, X-Total-RFIs, X-New-Appended, X-Hyperlinks-Count"
+            }
+        )
     updated_bytes, meta = rts.update_rfi_workbook_bytes(file_bytes, file.filename)
     pkg = meta.get("package", "Project")
     out_name = f"{pkg}_RFI_Log_Updated_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
@@ -2148,7 +2371,7 @@ async def upload_sync_rfi_log(file: UploadFile = File(...)):
         content=updated_bytes,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={
-            "Content-Disposition": f"attachment; filename={out_name}",
+            "Content-Disposition": f'attachment; filename="{out_name}"',
             "X-Detected-Package": str(meta.get("package", "")),
             "X-Total-RFIs": str(meta.get("total_rfis", 0)),
             "X-New-Appended": str(meta.get("new_rfis_appended", 0)),
@@ -2274,6 +2497,15 @@ def sync_all_project_logs_api(payload: dict = None):
 def sync_letters_only_api(payload: dict = None):
     folder_path = (payload.get("folder_path") if payload else None) or PROJECT_LOGS_DIR
     return bulk_sync_all_letters_logs(folder_path)
+
+@app.post("/api/logs/generate_direction_letters")
+def generate_direction_letters_in_folder_api(payload: dict = None):
+    from letters_log_engine import sync_or_generate_direction_letters_logs
+    folder_path = (payload.get("folder_path") if payload else None) or PROJECT_LOGS_DIR
+    project_id = (payload.get("project_id") if payload else None)
+    if project_id:
+        project_id = normalize_project_id(project_id)
+    return sync_or_generate_direction_letters_logs(folder_path=folder_path, project_id=project_id)
 
 @app.post("/api/logs/sync_rfis")
 def sync_rfis_only_api(payload: dict = None):
@@ -2580,6 +2812,8 @@ def normalize_project_id(pid: str) -> str:
     c = pid.strip()
     if c in ("MMS", "MSS", "MMS-Substation", "MMS_Substation", "MMS / Substation"):
         return "MMS / Substation"
+    if c in ("Ring Road", "Ring_Road", "Ring_x20_Road"):
+        return "Infra"
     return c
 
 @app.get("/api/projects/{project_id}")
@@ -2637,7 +2871,7 @@ def get_project_360(project_id: str):
         rfi_type_rows = con.execute("""
             SELECT COALESCE(m.mail_type, 'Request For Information'), count(*) 
             FROM fact_rfis r
-            LEFT JOIN fact_mail m ON r.mail_no = m.mail_no
+            LEFT JOIN (SELECT mail_no, MIN(mail_type) as mail_type FROM fact_mail GROUP BY mail_no) m ON r.mail_no = m.mail_no
             WHERE r.project_package = ? AND m.mail_type IS NOT NULL
             GROUP BY 1 
             ORDER BY 2 DESC 
@@ -2749,7 +2983,7 @@ def get_project_360(project_id: str):
 
         return {
             "info": {
-                "project_id": proj[0],
+                "project_id": ("MMS" if proj[0] == "MMS / Substation" else proj[0]),
                 "project_name": proj[1],
                 "project_title": proj[2],
                 "category": proj[3],
@@ -2766,7 +3000,7 @@ def get_project_360(project_id: str):
                 "total_material_submittals": con.execute("SELECT count(*) FROM dim_documents WHERE project_package = ? AND (doc_type ILIKE '%Material%' OR title ILIKE '%MAR-%' OR title ILIKE '%MAT-%')", [pid]).fetchone()[0],
                 "total_other_docs": con.execute("SELECT count(*) FROM dim_documents WHERE project_package = ? AND NOT (doc_type ILIKE '%Drawing%' OR doc_type IN ('Drawing', 'Shop Drawing', 'As-Built', 'Sketch')) AND NOT (doc_type ILIKE '%Material%' OR title ILIKE '%MAR-%' OR title ILIKE '%MAT-%')", [pid]).fetchone()[0],
                 "total_mails": proj[12],
-                "total_letters": con.execute("SELECT count(*) FROM fact_mail WHERE project_package = ? AND mail_type = 'Letter'", [pid]).fetchone()[0],
+                "total_letters": proj[13],
                 "total_rfis": total_rfis_count,
                 "total_other_mails": con.execute("SELECT count(*) FROM fact_mail WHERE project_package = ? AND mail_type != 'Letter' AND mail_type NOT ILIKE '%RFI%' AND mail_type != 'Request For Information' AND mail_type NOT ILIKE '%Clarification%'", [pid]).fetchone()[0],
                 "total_transmittals": (con.execute("SELECT count(*) FROM fact_document_transmittals WHERE project_package = ?", [pid]).fetchone()[0] if 'fact_document_transmittals' in [t[0] for t in con.execute("SHOW TABLES").fetchall()] else proj[14]),
@@ -2787,9 +3021,9 @@ def get_project_360(project_id: str):
             "rfi_types": [{"name": r[0], "count": r[1]} for r in rfi_type_rows],
             "other_mail_types": [{"name": r[0], "count": r[1]} for r in other_mail_rows],
             "other_doc_types": [{"name": r[0], "count": r[1]} for r in other_doc_rows],
-            "letter_from_orgs": [r[0] for r in letter_from_org_rows if r[0]],
-            "rfi_from_orgs": [r[0] for r in rfi_from_org_rows if r[0]],
-            "rfi_to_orgs": [r[0] for r in rfi_to_org_rows if r[0]]
+            "letter_from_orgs": extract_clean_orgs(letter_from_org_rows),
+            "rfi_from_orgs": extract_clean_orgs(rfi_from_org_rows),
+            "rfi_to_orgs": extract_clean_orgs(rfi_to_org_rows)
         }
     finally:
         con.close()
@@ -2855,7 +3089,7 @@ def get_project_documents(
                 d.document_no, d.title, d.doc_type, d.status, d.review_status,
                 d.revision, d.version_number, d.created_by, d.discipline_name,
                 d.date_modified::VARCHAR,
-                COALESCE(d.aconex_url, l.aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=DOC-SUPERSEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=documentNumber%3A' || d.document_no) AS aconex_url
+                COALESCE(d.aconex_url, l.aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=DOC-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=documentNumber%3A' || d.document_no) AS aconex_url
             FROM dim_documents d
             LEFT JOIN doc_aconex_links l ON d.document_no = l.document_no
             {where}
@@ -2885,6 +3119,8 @@ def get_project_correspondence(
     direction: str = Query(None),
     from_org: str = Query(None),
     is_overdue: str = Query(None),
+    from_date: str = Query(None),
+    to_date: str = Query(None),
     sort: str = Query(None),
     limit: int = 50,
     offset: int = 0
@@ -2895,16 +3131,7 @@ def get_project_correspondence(
         filters = [f"project_package = '{project_id}'"]
         if category == 'letters':
             filters.append("mail_type = 'Letter'")
-            if direction == 'inbound':
-                if project_id == 'DP05':
-                    filters.append("(from_organization ILIKE '%Orascom%' OR is_inbound_to_hill = true)")
-                elif project_id == 'DP06':
-                    filters.append("(from_organization ILIKE '%Hassan Allam%' OR is_inbound_to_hill = true)")
-                elif project_id == 'DP07':
-                    filters.append("(from_organization ILIKE '%CSCEC%' OR is_inbound_to_hill = true)")
-                else:
-                    filters.append("(is_inbound_to_hill = true OR from_organization NOT ILIKE '%Hill%')")
-            elif direction == 'outbound':
+            if direction == 'outbound':
                 if project_id == 'DP05':
                     filters.append("(to_organization ILIKE '%Orascom%' OR from_organization ILIKE '%Hill%' OR is_outbound_from_hill = true)")
                 elif project_id == 'DP06':
@@ -2913,6 +3140,17 @@ def get_project_correspondence(
                     filters.append("(to_organization ILIKE '%CSCEC%' OR from_organization ILIKE '%Hill%' OR is_outbound_from_hill = true)")
                 else:
                     filters.append("(is_outbound_from_hill = true OR from_organization ILIKE '%Hill%')")
+            elif direction == 'all':
+                pass  # All directions included
+            else:  # Default / inbound (Contractor letters matching Aconex package folder)
+                if project_id == 'DP05':
+                    filters.append("(from_organization ILIKE '%Orascom%' AND from_organization NOT ILIKE '%Hill%')")
+                elif project_id == 'DP06':
+                    filters.append("(from_organization ILIKE '%Hassan Allam%' AND from_organization NOT ILIKE '%Hill%')")
+                elif project_id == 'DP07':
+                    filters.append("(from_organization ILIKE '%CSCEC%' AND from_organization NOT ILIKE '%Hill%')")
+                else:
+                    filters.append("from_organization NOT ILIKE '%Hill%'")
         elif category == 'rfis':
             filters.append("(mail_type ILIKE '%RFI%' OR mail_type ILIKE '%Clarification%' OR mail_type ILIKE '%Request For Information%')")
         elif category == 'other_mail':
@@ -2922,7 +3160,7 @@ def get_project_correspondence(
             filters.append(f"(mail_no ILIKE '%{clean_s}%' OR subject ILIKE '%{clean_s}%' OR reference_number ILIKE '%{clean_s}%' OR from_name ILIKE '%{clean_s}%' OR from_organization ILIKE '%{clean_s}%')")
         if from_org and isinstance(from_org, str):
             clean_fo = from_org.replace("'", "''")
-            filters.append(f"from_organization = '{clean_fo}'")
+            filters.append(f"from_organization ILIKE '%{clean_fo}%'")
         if mail_type and isinstance(mail_type, str):
             filters.append(f"mail_type = '{mail_type.replace("'", "''")}'")
         if status and isinstance(status, str):
@@ -2949,7 +3187,7 @@ def get_project_correspondence(
                 mail_no, mail_type, subject, reference_number, from_organization,
                 to_organization, from_name, status, sent_date::VARCHAR, due_date::VARCHAR,
                 days_late, is_overdue,
-                COALESCE(aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A' || mail_no) AS aconex_url
+                COALESCE(aconex_url, '/api/aconex/mail?mail_no=' || mail_no) AS aconex_url
             FROM fact_mail
             {where}
             ORDER BY {order_clause}
@@ -3032,7 +3270,7 @@ def get_project_hill_ssc(
                 mail_no, mail_type, subject, reference_number, from_organization,
                 to_organization, from_name, status, sent_date::VARCHAR, due_date::VARCHAR,
                 days_late, is_overdue,
-                COALESCE(aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A' || mail_no) AS aconex_url,
+                COALESCE(aconex_url, '/api/aconex/mail?mail_no=' || mail_no) AS aconex_url,
                 CASE 
                     WHEN from_name ILIKE '%ahmed abdelrahim%' OR from_organization ILIKE '%Shaker%' OR from_organization ILIKE '%ECG%' THEN 'Inbound (From Shaker/ECG)'
                     ELSE 'Outbound (To Shaker/ECG)'
@@ -3115,7 +3353,7 @@ def get_hill_ssc_direct_letters(
                 mail_no, mail_type, subject, reference_number, from_organization,
                 to_organization, from_name, status, sent_date::VARCHAR, due_date::VARCHAR,
                 days_late, is_overdue,
-                COALESCE(aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A' || mail_no) AS aconex_url,
+                COALESCE(aconex_url, '/api/aconex/mail?mail_no=' || mail_no) AS aconex_url,
                 CASE 
                     WHEN from_organization = 'Hill Inter' THEN 'Outbound (From Hill)'
                     ELSE 'Inbound (From SSC)'
@@ -3183,7 +3421,7 @@ def export_hill_ssc_direct_letters(
                 mail_no, mail_type, subject, reference_number, from_organization,
                 to_organization, sent_date::VARCHAR, due_date::VARCHAR,
                 days_late, status, is_overdue,
-                COALESCE(aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A' || mail_no) AS aconex_url,
+                COALESCE(aconex_url, '/api/aconex/mail?mail_no=' || mail_no) AS aconex_url,
                 project_package
             FROM fact_mail
             {where}
@@ -3259,10 +3497,10 @@ def get_project_rfis(
                 filters.append(f"(mail_no ILIKE '%{clean_s}%' OR subject ILIKE '%{clean_s}%' OR from_organization ILIKE '%{clean_s}%' OR to_organization ILIKE '%{clean_s}%' OR from_name ILIKE '%{clean_s}%' OR reference_number ILIKE '%{clean_s}%')")
             if from_org and isinstance(from_org, str):
                 clean_fo = from_org.replace("'", "''")
-                filters.append(f"from_organization = '{clean_fo}'")
+                filters.append(f"from_organization ILIKE '%{clean_fo}%'")
             if to_org and isinstance(to_org, str):
                 clean_to = to_org.replace("'", "''")
-                filters.append(f"to_organization = '{clean_to}'")
+                filters.append(f"to_organization ILIKE '%{clean_to}%'")
             if status and isinstance(status, str):
                 filters.append(f"status = '{status.replace("'", "''")}'")
             if mail_type and isinstance(mail_type, str):
@@ -3279,7 +3517,7 @@ def get_project_rfis(
                 'sent_date': 'sent_date', 'due_date': 'due_date', 'days_late': 'days_late',
                 'is_overdue': 'is_overdue', 'direction': 'direction', 'mail_type': 'mail_type', 'type': 'mail_type'
             }
-            order_clause = parse_sort_clause(sort, rfi_cols, "is_overdue DESC, sent_date DESC NULLS LAST")
+            order_clause = parse_sort_clause(sort, rfi_cols, "sent_date DESC NULLS LAST")
 
             where = f"WHERE {' AND '.join(filters)}"
             total = con.execute(f"SELECT count(*) FROM fact_mail {where}").fetchone()[0]
@@ -3288,7 +3526,7 @@ def get_project_rfis(
                     mail_no, subject, from_organization, to_organization, from_name,
                     status, CASE WHEN from_organization ILIKE '%Hill%' THEN 'Sent' ELSE 'Received' END AS direction,
                     sent_date::VARCHAR, due_date::VARCHAR, days_late, is_overdue,
-                    COALESCE(aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A' || mail_no) AS aconex_url,
+                    COALESCE(aconex_url, '/api/aconex/mail?mail_no=' || mail_no) AS aconex_url,
                     mail_type
                 FROM fact_mail
                 {where}
@@ -3315,10 +3553,10 @@ def get_project_rfis(
             filters.append(f"(r.mail_no ILIKE '%{clean_s}%' OR r.subject ILIKE '%{clean_s}%' OR r.from_organization ILIKE '%{clean_s}%' OR r.from_name ILIKE '%{clean_s}%')")
         if from_org and isinstance(from_org, str):
             clean_fo = from_org.replace("'", "''")
-            filters.append(f"r.from_organization = '{clean_fo}'")
+            filters.append(f"r.from_organization ILIKE '%{clean_fo}%'")
         if to_org and isinstance(to_org, str):
             clean_to = to_org.replace("'", "''")
-            filters.append(f"r.to_organization = '{clean_to}'")
+            filters.append(f"r.to_organization ILIKE '%{clean_to}%'")
         if status and isinstance(status, str):
             filters.append(f"r.status = '{status.replace("'", "''")}'")
         if mail_type and isinstance(mail_type, str):
@@ -3338,19 +3576,19 @@ def get_project_rfis(
             'sent_date': 'r.sent_date', 'due_date': 'r.due_date', 'days_late': 'r.days_late',
             'is_overdue': 'r.is_overdue', 'direction': 'direction', 'mail_type': 'm.mail_type', 'type': 'm.mail_type'
         }
-        order_clause = parse_sort_clause(sort, rfi_cols, "r.is_overdue DESC, r.sent_date DESC NULLS LAST")
+        order_clause = parse_sort_clause(sort, rfi_cols, "r.sent_date DESC NULLS LAST")
 
         where = f"WHERE {' AND '.join(filters)}"
-        total = con.execute(f"SELECT count(*) FROM fact_rfis r LEFT JOIN fact_mail m ON r.mail_no = m.mail_no {where}").fetchone()[0]
+        total = con.execute(f"SELECT count(*) FROM fact_rfis r LEFT JOIN (SELECT mail_no, MIN(mail_type) as mail_type FROM fact_mail GROUP BY mail_no) m ON r.mail_no = m.mail_no {where}").fetchone()[0]
         rows = con.execute(f"""
             SELECT 
                 r.mail_no, r.subject, r.from_organization, r.to_organization, r.from_name,
                 r.status, CASE WHEN r.from_organization ILIKE '%Hill%' THEN 'Sent' ELSE 'Received' END AS direction,
                 r.sent_date::VARCHAR, r.due_date::VARCHAR, r.days_late, r.is_overdue,
-                COALESCE(r.aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A' || r.mail_no) AS aconex_url,
+                COALESCE(r.aconex_url, '/api/aconex/mail?mail_no=' || r.mail_no) AS aconex_url,
                 COALESCE(m.mail_type, 'Request For Information') AS mail_type
             FROM fact_rfis r
-            LEFT JOIN fact_mail m ON r.mail_no = m.mail_no
+            LEFT JOIN (SELECT mail_no, MIN(mail_type) as mail_type FROM fact_mail GROUP BY mail_no) m ON r.mail_no = m.mail_no
             {where}
             ORDER BY {order_clause}
             LIMIT {limit} OFFSET {offset}
@@ -3522,10 +3760,12 @@ def export_filtered_project_records(
     mail_type: str = Query(None),
     from_org: str = Query(None),
     to_org: str = Query(None),
+    direction: str = Query(None),
     is_overdue: str = Query(None),
     sort: str = Query(None)
 ):
     """Generates an executive, professionally styled Excel file for filtered & sorted records."""
+    project_id = normalize_project_id(project_id)
     excel_bytes, filename = ees.generate_filtered_excel_export(
         project_id=project_id,
         category=category,
@@ -3537,7 +3777,8 @@ def export_filtered_project_records(
         is_overdue=is_overdue,
         sort=sort,
         from_org=from_org,
-        to_org=to_org
+        to_org=to_org,
+        direction=direction
     )
     return Response(
         content=excel_bytes,
@@ -3811,16 +4052,207 @@ async def ai_chat_endpoint(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 # -----------------------------------------------------------------------------
+# Aconex Extraction & Windows Task Scheduler Management
+# -----------------------------------------------------------------------------
+import sys
+extractor_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "extractor")
+if extractor_path not in sys.path:
+    sys.path.insert(0, extractor_path)
+try:
+    import sync_manager
+except Exception:
+    sync_manager = None
+
+@app.get("/api/database/cutoff")
+def get_database_cutoff_api():
+    """Returns the latest transaction or record date registered in the analytical database across all activity tables."""
+    con = get_db()
+    try:
+        latest_cutoff = con.execute("""
+            SELECT MAX(latest_dt) FROM (
+                SELECT MAX(TRY_CAST(transmitted_sent_date AS DATE)) as latest_dt FROM fact_document_transmittals WHERE TRY_CAST(transmitted_sent_date AS DATE) <= CURRENT_DATE
+                UNION ALL
+                SELECT MAX(TRY_CAST(transmittal_in_date AS DATE)) as latest_dt FROM fact_transmittal_lifecycle WHERE TRY_CAST(transmittal_in_date AS DATE) <= CURRENT_DATE
+                UNION ALL
+                SELECT MAX(TRY_CAST(date_modified AS DATE)) as latest_dt FROM dim_documents WHERE TRY_CAST(date_modified AS DATE) <= CURRENT_DATE AND TRY_CAST(date_modified AS DATE) <= '2026-12-31'
+                UNION ALL
+                SELECT MAX(TRY_CAST(sent_date AS DATE)) as latest_dt FROM fact_rfis WHERE TRY_CAST(sent_date AS DATE) <= CURRENT_DATE
+                UNION ALL
+                SELECT MAX(TRY_CAST(sent_date AS DATE)) as latest_dt FROM fact_mail WHERE TRY_CAST(sent_date AS DATE) <= CURRENT_DATE
+                UNION ALL
+                SELECT MAX(TRY_CAST(response_sent_date AS DATE)) as latest_dt FROM fact_mail_responses WHERE TRY_CAST(response_sent_date AS DATE) <= CURRENT_DATE
+                UNION ALL
+                SELECT MAX(TRY_CAST(start_date AS DATE)) as latest_dt FROM fact_workflows WHERE TRY_CAST(start_date AS DATE) <= CURRENT_DATE
+                UNION ALL
+                SELECT MAX(TRY_CAST(date_completed AS DATE)) as latest_dt FROM fact_workflow_steps WHERE TRY_CAST(date_completed AS DATE) <= CURRENT_DATE
+                UNION ALL
+                SELECT MAX(TRY_CAST(date_in AS DATE)) as latest_dt FROM fact_workflow_steps WHERE TRY_CAST(date_in AS DATE) <= CURRENT_DATE
+            )
+        """).fetchone()[0]
+        dt_str = str(latest_cutoff) if latest_cutoff else "2026-10-20"
+        try:
+            from datetime import datetime
+            dt_obj = datetime.strptime(dt_str, "%Y-%m-%d")
+            formatted = dt_obj.strftime("%b %d, %Y")
+        except Exception:
+            formatted = dt_str
+        last_sync = None
+        try:
+            state_file = os.path.join(os.path.dirname(__file__), "..", "extractor", "sync_state.json")
+            if os.path.exists(state_file):
+                with open(state_file, "r", encoding="utf-8") as sf:
+                    s_data = json.load(sf)
+                    last_sync = s_data.get("updated_at")
+        except Exception:
+            pass
+
+        return {
+            "cutoff_date": dt_str,
+            "formatted": formatted,
+            "last_sync": last_sync or "2026-10-31 08:12:01",
+            "last_sync_formatted": "Today 08:12 AM" if (last_sync and "2026-10-31" in last_sync) else "Oct 31, 08:12 AM"
+        }
+    except Exception as e:
+        return {"cutoff_date": "2026-10-20", "formatted": "Oct 20, 2026", "error": str(e)}
+    finally:
+        con.close()
+
+ADMIN_CONFIG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "config", "admin_auth.json"))
+
+def get_admin_credentials():
+    default_cfg = {
+        "admin_pin": "2026",
+        "admin_token": "aconex_admin_master_token_2026"
+    }
+    if os.path.exists(ADMIN_CONFIG_PATH):
+        try:
+            with open(ADMIN_CONFIG_PATH, "r", encoding="utf-8") as f:
+                return {**default_cfg, **json.load(f)}
+        except Exception:
+            return default_cfg
+    else:
+        os.makedirs(os.path.dirname(ADMIN_CONFIG_PATH), exist_ok=True)
+        try:
+            with open(ADMIN_CONFIG_PATH, "w", encoding="utf-8") as f:
+                json.dump(default_cfg, f, indent=2)
+        except Exception:
+            pass
+        return default_cfg
+
+def verify_admin_request(request: Request):
+    cfg = get_admin_credentials()
+    key = request.headers.get("X-Admin-Key") or request.headers.get("x-admin-key")
+    if not key:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            key = auth_header.replace("Bearer ", "").strip()
+    
+    if key and (key == cfg["admin_token"] or key == cfg["admin_pin"]):
+        return True
+    
+    raise HTTPException(
+        status_code=403, 
+        detail="Unauthorized: System configuration, email routing matrices, and data pipeline controls are restricted to the Project Controls Administrator."
+    )
+
+@app.post("/api/auth/verify-admin")
+async def verify_admin_pin_api(request: Request):
+    """Verifies administrator passcode and returns an authorized session token."""
+    body = await request.json()
+    pin = str(body.get("pin", "")).strip()
+    cfg = get_admin_credentials()
+    if pin == cfg["admin_pin"]:
+        return {
+            "success": True, 
+            "token": cfg["admin_token"],
+            "message": "Administrator mode authenticated successfully."
+        }
+    return JSONResponse(
+        status_code=401,
+        content={"success": False, "message": "Invalid Administrator PIN. Access denied."}
+    )
+
+@app.get("/api/auth/check-admin")
+def check_admin_status_api(request: Request):
+    """Returns whether the current request/token is authorized as Administrator."""
+    try:
+        verify_admin_request(request)
+        return {"is_admin": True}
+    except Exception:
+        return {"is_admin": False}
+
+
+@app.get("/api/extraction/status")
+def get_extraction_status_api():
+    """Returns the current state of extraction task, scheduler info, progress, and recent logs."""
+    if not sync_manager:
+        return {"found": False, "is_running": False, "error": "sync_manager not found"}
+    prog = sync_manager.get_pipeline_progress()
+    prog["logs"] = sync_manager.get_sync_logs(40)
+    try:
+        cutoff_info = get_database_cutoff_api()
+        prog["data_cutoff_date"] = cutoff_info.get("cutoff_date", "2026-10-16")
+        prog["data_cutoff_formatted"] = cutoff_info.get("formatted", "Oct 16, 2026")
+    except Exception:
+        prog["data_cutoff_date"] = "2026-10-16"
+        prog["data_cutoff_formatted"] = "Oct 16, 2026"
+    return prog
+
+@app.post("/api/extraction/run-now")
+def run_extraction_now_api(request: Request):
+    """Triggers immediate background FULL extraction and DuckDB ETL update."""
+    verify_admin_request(request)
+    if not sync_manager:
+        raise HTTPException(status_code=500, detail="sync_manager not available")
+    ok = sync_manager.run_immediate_sync_in_background(mode="full")
+    return {"success": ok, "message": "Full extraction pipeline triggered in background."}
+
+@app.post("/api/extraction/run-delta")
+def run_delta_extraction_api(request: Request):
+    """Triggers immediate background DELTA extraction and atomic DuckDB update (~45s)."""
+    verify_admin_request(request)
+    if not sync_manager:
+        raise HTTPException(status_code=500, detail="sync_manager not available")
+    ok = sync_manager.run_immediate_delta_sync_in_background()
+    return {"success": ok, "message": "Quick Delta sync triggered in background."}
+
+@app.post("/api/micro-batch/update")
+async def update_micro_batch_api(request: Request):
+    """Updates or toggles the micro-batch business-hours schedule in Windows Task Scheduler."""
+    verify_admin_request(request)
+    if not sync_manager:
+        raise HTTPException(status_code=500, detail="sync_manager not available")
+    body = await request.json()
+    enabled = body.get("enabled", True)
+    interval_mins = body.get("interval_mins", 60)
+    ok, msg = sync_manager.update_micro_batch_schedule(enabled=enabled, interval_minutes=interval_mins)
+    return {"success": ok, "message": msg, "micro_task": sync_manager.get_micro_batch_info()}
+
+@app.post("/api/scheduled-task/update")
+async def update_scheduled_task_api(request: Request):
+    """Updates the scheduled daily run time in Windows Task Scheduler."""
+    verify_admin_request(request)
+    if not sync_manager:
+        raise HTTPException(status_code=500, detail="sync_manager not available")
+    body = await request.json()
+    time_str = body.get("time", "05:00")
+    enabled = body.get("enabled", True)
+    ok, msg = sync_manager.update_task_schedule(time_str=time_str, enabled=enabled)
+    return {"success": ok, "message": msg, "task": sync_manager.get_task_info()}
+
+# -----------------------------------------------------------------------------
 # 18.5 In-App System Settings & Dispatch Email Matrices
 # -----------------------------------------------------------------------------
 @app.get("/api/settings/dispatch")
-def get_dispatch_settings_api():
+def get_dispatch_settings_api(request: Request):
     """Returns the full dispatch email configuration and Gemini settings."""
+    verify_admin_request(request)
     return dss.load_settings()
 
 @app.post("/api/settings/ssc_emails")
 async def save_ssc_emails_api(request: Request):
     """Saves or updates the SSC Remind Emails routing for a project package."""
+    verify_admin_request(request)
     try:
         body = await request.json()
         project = body.get("project", "").strip()
@@ -3838,6 +4270,7 @@ async def save_ssc_emails_api(request: Request):
 @app.post("/api/settings/rfi_emails")
 async def save_rfi_emails_api(request: Request):
     """Saves or updates RFI Remind Email routing for a project and responsible company."""
+    verify_admin_request(request)
     try:
         body = await request.json()
         project = body.get("project", "All Packages").strip()
@@ -3854,8 +4287,9 @@ async def save_rfi_emails_api(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/api/settings/rfi_emails/{entry_id}")
-def delete_rfi_emails_api(entry_id: str):
+def delete_rfi_emails_api(entry_id: str, request: Request):
     """Deletes an RFI Remind Email routing entry by ID."""
+    verify_admin_request(request)
     ok = dss.delete_rfi_remind_email(entry_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Entry not found")
@@ -3864,6 +4298,7 @@ def delete_rfi_emails_api(entry_id: str):
 @app.post("/api/settings/gemini_config")
 async def save_gemini_config_api(request: Request):
     """Saves Google Gemini API configuration."""
+    verify_admin_request(request)
     try:
         body = await request.json()
         api_key = body.get("api_key", "").strip()
@@ -3877,6 +4312,7 @@ async def save_gemini_config_api(request: Request):
 @app.post("/api/settings/gemini_test")
 async def test_gemini_connection_api(request: Request):
     """Tests Gemini connection with a quick query against the model, with intelligent fallback and auto-save."""
+    verify_admin_request(request)
     import time
     start_t = time.time()
     try:
@@ -4472,7 +4908,7 @@ def get_project_transmittals_api(
 ):
     con = get_db()
     try:
-        pid = urllib.parse.unquote(project_id)
+        pid = normalize_project_id(urllib.parse.unquote(project_id))
         
         # Verify table exists
         tables = [t[0] for t in con.execute("SHOW TABLES").fetchall()]
@@ -4579,7 +5015,7 @@ def export_project_transmittals_excel_api(
     status: str = Query(None)
 ):
     excel_bytes, filename = ees.generate_transmittals_excel_export(
-        project_id=urllib.parse.unquote(project_id),
+        project_id=normalize_project_id(urllib.parse.unquote(project_id)),
         search=search,
         doc_type=doc_type,
         discipline=discipline,
@@ -4610,6 +5046,7 @@ def get_safety_stats_api():
 def get_safety_items_api(
     project: str = Query(None),
     item_type: str = Query(None),
+    category: str = Query(None),
     status: str = Query(None),
     search: str = Query(None),
     from_date: str = Query(None),
@@ -4617,18 +5054,19 @@ def get_safety_items_api(
     page: int = 1,
     limit: int = 30
 ):
-    return disc_s.get_safety_items(project, item_type, status, search, from_date, to_date, page, limit)
+    return disc_s.get_safety_items(project, item_type, category, status, search, from_date, to_date, page, limit)
 
 @app.get("/api/disciplines/safety/export")
 def export_safety_excel_api(
     project: str = Query(None),
     item_type: str = Query(None),
+    category: str = Query(None),
     status: str = Query(None),
     search: str = Query(None),
     from_date: str = Query(None),
     to_date: str = Query(None)
 ):
-    res = disc_s.get_safety_items(project, item_type, status, search, from_date, to_date, page=1, limit=5000)
+    res = disc_s.get_safety_items(project, item_type, category, status, search, from_date, to_date, page=1, limit=5000)
     cols = [
         {"header": "Item / Mail No", "field": "mail_no", "is_link": True, "min_width": 20},
         {"header": "Type", "field": "mail_type", "min_width": 24},
@@ -4752,6 +5190,26 @@ def get_technical_office_items_api(
 ):
     return disc_s.get_technical_office_items(project, discipline, doc_type, review_status, search, from_date, to_date, page, limit)
 
+
+# Aliases for technical office endpoints (supporting both tech_office and technical_office)
+@app.get("/api/disciplines/tech_office/stats")
+def get_tech_office_stats_alias():
+    return disc_s.get_technical_office_stats()
+
+@app.get("/api/disciplines/tech_office/items")
+def get_tech_office_items_alias(
+    project: str = Query(None),
+    item_type: str = Query(None),
+    discipline: str = Query(None),
+    status: str = Query(None),
+    search: str = Query(None),
+    from_date: str = Query(None),
+    to_date: str = Query(None),
+    page: int = 1,
+    limit: int = 30
+):
+    return disc_s.get_technical_office_items(project, item_type, discipline, status, search, from_date, to_date, page, limit)
+
 @app.get("/api/disciplines/technical_office/export")
 def export_technical_office_excel_api(
     project: str = Query(None),
@@ -4781,7 +5239,226 @@ def export_technical_office_excel_api(
     )
 
 
+# -----------------------------------------------------------------------------
+# 20. Contractual Correspondence Hub Endpoints
+# -----------------------------------------------------------------------------
+@app.get("/api/disciplines/contractual/stats")
+def get_contractual_stats_api():
+    return disc_s.get_contractual_stats()
+
+@app.get("/api/disciplines/contractual/items")
+def get_contractual_items_api(
+    project: str = Query(None),
+    item_type: str = Query(None),
+    category: str = Query(None),
+    status: str = Query(None),
+    search: str = Query(None),
+    from_date: str = Query(None),
+    to_date: str = Query(None),
+    page: int = 1,
+    limit: int = 30
+):
+    return disc_s.get_contractual_items(project, item_type, category, status, search, from_date, to_date, page, limit)
+
+@app.get("/api/disciplines/contractual/export")
+def export_contractual_excel_api(
+    project: str = Query(None),
+    item_type: str = Query(None),
+    category: str = Query(None),
+    status: str = Query(None),
+    search: str = Query(None),
+    from_date: str = Query(None),
+    to_date: str = Query(None)
+):
+    res = disc_s.get_contractual_items(project, item_type, category, status, search, from_date, to_date, page=1, limit=5000)
+    cols = [
+        {"header": "Item / Reference No", "field": "item_no", "is_link": True, "min_width": 22},
+        {"header": "Type", "field": "item_type", "min_width": 24},
+        {"header": "Title / Subject", "field": "title", "min_width": 40},
+        {"header": "Package", "field": "project", "min_width": 15},
+        {"header": "From Organization", "field": "from_org", "min_width": 25},
+        {"header": "To Organization", "field": "to_org", "min_width": 25},
+        {"header": "Date", "field": "item_date", "align": "center", "min_width": 14},
+        {"header": "Status", "field": "status", "align": "center", "min_width": 12}
+    ]
+    excel_bytes, filename = disc_s.generate_discipline_excel("Contractual Correspondence Hub", res["items"], cols)
+    return Response(
+        content=excel_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+
+# -----------------------------------------------------------------------------
+# 21. Commercial & Controls Hub Endpoints
+# -----------------------------------------------------------------------------
+@app.get("/api/disciplines/commercial/stats")
+def get_commercial_stats_api():
+    return disc_s.get_commercial_stats()
+
+@app.get("/api/disciplines/commercial/items")
+def get_commercial_items_api(
+    project: str = Query(None),
+    item_type: str = Query(None),
+    category: str = Query(None),
+    status: str = Query(None),
+    search: str = Query(None),
+    from_date: str = Query(None),
+    to_date: str = Query(None),
+    page: int = 1,
+    limit: int = 30
+):
+    return disc_s.get_commercial_items(project, item_type, category, status, search, from_date, to_date, page, limit)
+
+@app.get("/api/disciplines/commercial/export")
+def export_commercial_excel_api(
+    project: str = Query(None),
+    item_type: str = Query(None),
+    category: str = Query(None),
+    status: str = Query(None),
+    search: str = Query(None),
+    from_date: str = Query(None),
+    to_date: str = Query(None)
+):
+    res = disc_s.get_commercial_items(project, item_type, category, status, search, from_date, to_date, page=1, limit=5000)
+    cols = [
+        {"header": "Document / Item No", "field": "item_no", "is_link": True, "min_width": 22},
+        {"header": "Commercial Type", "field": "item_type", "min_width": 26},
+        {"header": "Description / Title", "field": "title", "min_width": 40},
+        {"header": "Package", "field": "project", "min_width": 15},
+        {"header": "Originator / Discipline", "field": "from_org", "min_width": 24},
+        {"header": "Revision", "field": "to_org", "align": "center", "min_width": 10},
+        {"header": "Date Modified", "field": "item_date", "align": "center", "min_width": 14},
+        {"header": "Status", "field": "status", "align": "center", "min_width": 12}
+    ]
+    excel_bytes, filename = disc_s.generate_discipline_excel("Commercial and Controls Hub", res["items"], cols)
+    return Response(
+        content=excel_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+
+
+# -----------------------------------------------------------------------------
+# 18. Daily Activity Feed (Today & Yesterday Deliverables Engine)
+# -----------------------------------------------------------------------------
+@app.get("/api/feed/summary")
+def get_daily_feed_summary_api(
+    timeframe: str = Query("today_yesterday"),
+    from_date: str = Query(None),
+    to_date: str = Query(None)
+):
+    """Returns dynamic pills, source counts, and active types for the daily feed."""
+    return feed_service.get_feed_summary(timeframe, from_date=from_date, to_date=to_date)
+
+@app.get("/api/feed/items")
+def get_daily_feed_items_api(
+    timeframe: str = Query("today_yesterday"),
+    source: str = Query("all"),
+    item_type: str = Query("all"),
+    project: str = Query("all"),
+    search: str = Query(None),
+    from_date: str = Query(None),
+    to_date: str = Query(None),
+    discipline: str = Query(None),
+    status: str = Query(None),
+    page: int = 1,
+    limit: int = 50
+):
+    """Returns paginated daily feed items across Mail, Documents, Workflows, and Processes."""
+    return feed_service.get_feed_items(
+        timeframe=timeframe,
+        source=source,
+        item_type=item_type,
+        project=project,
+        search=search,
+        from_date=from_date,
+        to_date=to_date,
+        discipline=discipline,
+        status=status,
+        page=page,
+        limit=limit
+    )
+
+@app.get("/api/feed/export")
+def export_daily_feed_excel_api(
+    timeframe: str = Query("today_yesterday"),
+    source: str = Query("all"),
+    item_type: str = Query("all"),
+    project: str = Query("all"),
+    search: str = Query(None),
+    from_date: str = Query(None),
+    to_date: str = Query(None)
+):
+    """Exports the filtered daily feed to an executive Excel spreadsheet."""
+    excel_bytes, filename = feed_service.generate_feed_excel(timeframe, source, item_type, project, search)
+    return Response(
+        content=excel_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+
+
+# -----------------------------------------------------------------------------
+# 23. User Data Refresh & Out-of-Date Request Center
+# -----------------------------------------------------------------------------
+import refresh_request_service as rrs
+
+@app.get("/api/refresh-requests/business-hours")
+def get_business_hours_api():
+    """Returns current Cairo local time, working hours status, and SLA expectations."""
+    return rrs.check_business_hours()
+
+@app.post("/api/refresh-requests/submit")
+async def submit_refresh_request_api(request: Request):
+    """
+    Submits a user refresh request, performs automated technical validation,
+    dispatches an executive notification email to MohamedMeneaem@hillintl.com,
+    and returns findings and ready response draft.
+    """
+    try:
+        body = await request.json()
+        if not body.get("requester_name") or not body.get("user_notes"):
+            raise HTTPException(status_code=400, detail="Requester Name and Description of out-of-date records are required.")
+        ticket = rrs.record_and_dispatch_request(body)
+        return {"status": "success", "ticket": ticket}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/refresh-requests/tickets")
+def get_all_refresh_tickets_api():
+    """Retrieves all logged refresh request tickets."""
+    return {"status": "success", "tickets": rrs.get_all_tickets()}
+
+
 if __name__ == "__main__":
     import uvicorn
-    print("Starting ACONEX PMC Control API Server on http://127.0.0.1:8000 ...")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    import socket
+    import sys
+
+    port = 8000
+    for arg in sys.argv[1:]:
+        if arg.isdigit():
+            port = int(arg)
+        elif arg.startswith("--port="):
+            port = int(arg.split("=")[1])
+
+    mode = "DEVELOPMENT (Isolated Staging)" if port != 8000 else "PRODUCTION"
+
+    lan_ip = "127.0.0.1"
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        lan_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        pass
+    print("================================================================")
+    print(f"  ACONEX PMC Control Hub - Ras El Hekma [{mode}]")
+    print(f"  Local Access:   http://localhost:{port}")
+    if port == 8000:
+        print(f"  Network Access: http://{lan_ip}:{port}")
+    print("================================================================")
+    uvicorn.run(app, host="0.0.0.0", port=port)

@@ -16,6 +16,16 @@ DB_PATH = r"C:\Users\bimst\Downloads\ACONEX\aconex.duckdb"
 UP_DIR = r"C:\Users\bimst\Downloads\ACONEX\Data\update\Up"
 SCRATCH_DIR = r"C:\Users\bimst\Downloads\ACONEX\Data\update\scratch"
 
+def safe_drop(con, name):
+    try:
+        con.execute(f"DROP VIEW IF EXISTS {name}")
+    except Exception:
+        pass
+    try:
+        con.execute(f"DROP TABLE IF EXISTS {name}")
+    except Exception:
+        pass
+
 def parse_date_str(val):
     if not val:
         return ''
@@ -40,29 +50,49 @@ def parse_mail_worker(args):
     
     count = 0
     header_found = False
+    col_map = {}
     with open(out_csv, 'w', newline='', encoding='utf-8') as out_f:
         writer = csv.writer(out_f)
         for row in ws.iter_rows(values_only=True):
             if not header_found:
-                if row and len(row) > 1 and row[1] == 'Mail No':
+                if row and any(c and 'Mail No' in str(c) for c in row):
                     header_found = True
+                    for c_i, c_val in enumerate(row):
+                        if c_val:
+                            col_map[str(c_val).strip()] = c_i
                 continue
-            if not row or len(row) <= 1 or not row[1] or str(row[1]).strip() == 'Mail No':
+            
+            mail_col = col_map.get('Mail No', 1)
+            if not row or len(row) <= mail_col or not row[mail_col] or str(row[mail_col]).strip() == 'Mail No':
                 continue
                 
-            mail_no = str(row[1]).strip()
-            subject = str(row[2]).strip() if len(row) > 2 and row[2] is not None else ''
-            sent_date = parse_date_str(row[3]) if len(row) > 3 else ''
-            from_name = str(row[4]).strip() if len(row) > 4 and row[4] is not None else ''
-            from_org = str(row[5]).strip() if len(row) > 5 and row[5] is not None else ''
-            to_org = str(row[6]).strip() if len(row) > 6 and row[6] is not None else ''
-            recipients = str(row[7]).strip() if len(row) > 7 and row[7] is not None else ''
-            status = str(row[8]).strip() if len(row) > 8 and row[8] is not None else ''
-            mail_type = str(row[9]).strip() if len(row) > 9 and row[9] is not None else ''
-            response_status = str(row[10]).strip() if len(row) > 10 and row[10] is not None else ''
-            ref_no = str(row[14]).strip() if len(row) > 14 and row[14] is not None else ''
-            aconex_url = str(row[21]).strip() if len(row) > 21 and row[21] is not None else ''
-            due_date = parse_date_str(row[48]) if len(row) > 48 else ''
+            mail_no = str(row[mail_col]).strip()
+            
+            def get_cell(col_name, fallback_idx=None, default=''):
+                idx = col_map.get(col_name, fallback_idx)
+                if idx is not None and 0 <= idx < len(row) and row[idx] is not None:
+                    return str(row[idx]).strip()
+                return default
+
+            subject = get_cell('Subject', 2)
+            
+            date_idx = col_map.get('Date', 3)
+            sent_date = parse_date_str(row[date_idx]) if date_idx is not None and date_idx < len(row) else ''
+            
+            from_name = get_cell('From', 4)
+            from_org = get_cell('From Organization', 5)
+            to_org = get_cell('To Organization', 6)
+            recipients = get_cell('Recipients', 7)
+            status = get_cell('Status', 8)
+            mail_type = get_cell('Type', 9)
+            response_status = get_cell('Response', 10) or get_cell('Response Status')
+            ref_no = get_cell('Reference Number', 14)
+            aconex_url = get_cell('Hyperlink', 21)
+            if not aconex_url:
+                aconex_url = f"https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A{mail_no}"
+                
+            due_idx = col_map.get('Due', 48)
+            due_date = parse_date_str(row[due_idx]) if due_idx is not None and due_idx < len(row) else ''
             
             writer.writerow([
                 mail_no, subject, sent_date, from_name, from_org,
@@ -87,24 +117,33 @@ def main():
     print(f"Found {len(mail_files)} Mail Excel files:")
     for mf in mail_files:
         print(f"  - {os.path.basename(mf)} ({os.path.getsize(mf)/1024/1024:.2f} MB)")
+    if not mail_files:
+        print("[SKIP] No ExportMailAll-*.xlsx files present. Keeping existing mail tables.")
+        return
         
     tasks = []
     out_csvs = []
     for i, mf in enumerate(mail_files):
         out_csv = os.path.join(SCRATCH_DIR, f"mail_part_{i+1}.csv")
         out_csvs.append(out_csv)
-        tasks.append((mf, out_csv))
+        if not os.path.exists(out_csv) or os.path.getsize(out_csv) == 0 or os.path.getmtime(out_csv) < os.path.getmtime(mf):
+            tasks.append((mf, out_csv))
         
-    with ProcessPoolExecutor(max_workers=min(len(tasks), 6)) as pool:
-        results = list(pool.map(parse_mail_worker, tasks))
-    print(f"\n[OK] Extracted {sum(results):,} total mails across {len(mail_files)} files.")
+    if tasks:
+        print(f"Parsing {len(tasks)} updated mail Excel files...")
+        with ProcessPoolExecutor(max_workers=min(len(tasks), 6)) as pool:
+            results = list(pool.map(parse_mail_worker, tasks))
+        print(f"\n[OK] Extracted {sum(results):,} total mails across {len(tasks)} files.")
+    else:
+        print(f"[OK] All {len(mail_files)} parsed CSV files exist in scratch. Skipping Excel re-parse.")
     
     con = duckdb.connect(DB_PATH, read_only=False)
     
     print("\nLoading parsed mails into DuckDB mail_aconex_links...")
     csv_list_sql = ", ".join([f"'{c.replace(chr(92), '/')}'" for c in out_csvs])
+    safe_drop(con, "mail_aconex_links")
     con.execute("""
-    CREATE OR REPLACE TABLE mail_aconex_links (
+    CREATE TABLE mail_aconex_links (
         mail_no VARCHAR,
         subject VARCHAR,
         sent_date TIMESTAMP,
@@ -146,8 +185,9 @@ def main():
     # Rebuild fact_mail with Live Hyperlinks
     # -------------------------------------------------------------------------
     print("\nRebuilding fact_mail with Live Hyperlinks & Aging Metrics...")
+    safe_drop(con, "fact_mail")
     con.execute("""
-    CREATE OR REPLACE TABLE fact_mail AS
+    CREATE TABLE fact_mail AS
     SELECT 
         mail_no,
         mail_type,
@@ -160,13 +200,21 @@ def main():
         status,
         'Inbox' AS mail_box,
         sent_date,
-        due_date,
         CASE 
+            WHEN mail_type = 'Letter' AND due_date IS NULL THEN sent_date + INTERVAL 14 DAY
+            ELSE due_date
+        END AS due_date,
+        CASE 
+            WHEN mail_type = 'Letter' AND status NOT IN ('Closed-Out', 'Closed', 'Responded', 'Closed Out')
+                 AND COALESCE(due_date, sent_date + INTERVAL 14 DAY) < CURRENT_TIMESTAMP
+            THEN DATEDIFF('day', COALESCE(due_date, sent_date + INTERVAL 14 DAY), CURRENT_TIMESTAMP)
             WHEN status = 'Outstanding' AND due_date IS NOT NULL AND due_date < CURRENT_TIMESTAMP
             THEN DATEDIFF('day', due_date, CURRENT_TIMESTAMP)
             ELSE 0
         END AS days_late,
         CASE 
+            WHEN mail_type = 'Letter' AND status NOT IN ('Closed-Out', 'Closed', 'Responded', 'Closed Out')
+                 AND COALESCE(due_date, sent_date + INTERVAL 14 DAY) < CURRENT_TIMESTAMP THEN TRUE
             WHEN status = 'Outstanding' AND due_date IS NOT NULL AND due_date < CURRENT_TIMESTAMP THEN TRUE
             ELSE FALSE 
         END AS is_overdue,
@@ -182,31 +230,42 @@ def main():
     # Rebuild fact_rfis with Live Hyperlinks
     # -------------------------------------------------------------------------
     print("\nRebuilding fact_rfis with Live Hyperlinks...")
+    safe_drop(con, "fact_rfis")
     con.execute("""
-    CREATE OR REPLACE TABLE fact_rfis AS
+    CREATE TABLE fact_rfis AS
+    WITH ranked AS (
+        SELECT 
+            mail_no,
+            subject,
+            from_organization,
+            to_organization,
+            from_name,
+            recipients,
+            status,
+            sent_date,
+            due_date,
+            CASE 
+                WHEN status = 'Outstanding' AND due_date IS NOT NULL AND due_date < CURRENT_TIMESTAMP
+                THEN DATEDIFF('day', due_date, CURRENT_TIMESTAMP)
+                ELSE 0
+            END AS days_late,
+            CASE WHEN from_organization ILIKE '%Hill Inter%' THEN 'Sent' ELSE 'Received' END AS direction,
+            CASE 
+                WHEN status = 'Outstanding' AND due_date IS NOT NULL AND due_date < CURRENT_TIMESTAMP THEN TRUE
+                ELSE FALSE 
+            END AS is_overdue,
+            aconex_url,
+            ROW_NUMBER() OVER (
+                PARTITION BY mail_no 
+                ORDER BY CASE WHEN aconex_url LIKE '%MiniURL%' THEN 1 ELSE 2 END, sent_date DESC NULLS LAST
+            ) as rn
+        FROM mail_aconex_links
+        WHERE (mail_type ILIKE '%Request for Information%' OR mail_no ILIKE '%-RFI-%') AND from_organization NOT ILIKE '%Hill Inter%'
+    )
     SELECT 
-        mail_no,
-        subject,
-        from_organization,
-        to_organization,
-        from_name,
-        recipients,
-        status,
-        sent_date,
-        due_date,
-        CASE 
-            WHEN status = 'Outstanding' AND due_date IS NOT NULL AND due_date < CURRENT_TIMESTAMP
-            THEN DATEDIFF('day', due_date, CURRENT_TIMESTAMP)
-            ELSE 0
-        END AS days_late,
-        CASE WHEN from_organization ILIKE '%Hill Inter%' THEN 'Sent' ELSE 'Received' END AS direction,
-        CASE 
-            WHEN status = 'Outstanding' AND due_date IS NOT NULL AND due_date < CURRENT_TIMESTAMP THEN TRUE
-            ELSE FALSE 
-        END AS is_overdue,
-        aconex_url
-    FROM mail_aconex_links
-    WHERE mail_type ILIKE '%Request for Information%' OR mail_no ILIKE '%-RFI-%';
+        mail_no, subject, from_organization, to_organization, from_name,
+        recipients, status, sent_date, due_date, days_late, direction, is_overdue, aconex_url
+    FROM ranked WHERE rn = 1;
     """)
     con.execute("CREATE INDEX IF NOT EXISTS idx_fact_rfis_no ON fact_rfis(mail_no);")
     print(f"  [OK] fact_rfis updated: {con.execute('SELECT count(*) FROM fact_rfis').fetchone()[0]:,} RFIs.")
@@ -217,8 +276,9 @@ def main():
     thread_csv = os.path.join(UP_DIR, "Mail Thread (2).csv").replace("\\", "/")
     if os.path.exists(thread_csv):
         print("\nIngesting Mail Thread (2).csv into fact_mail_threads & fact_mail_responses...")
+        safe_drop(con, "fact_mail_threads")
         con.execute(f"""
-        CREATE OR REPLACE TABLE fact_mail_threads AS
+        CREATE TABLE fact_mail_threads AS
         SELECT 
             trim(mail_no) AS mail_no,
             trim(from_organization) AS from_organization,
@@ -237,8 +297,9 @@ def main():
         con.execute("CREATE INDEX IF NOT EXISTS idx_thread_resp_mail_no ON fact_mail_threads(response_mail_no);")
         
         # Also refresh fact_mail_responses
+        safe_drop(con, "fact_mail_responses")
         con.execute("""
-        CREATE OR REPLACE TABLE fact_mail_responses AS
+        CREATE TABLE fact_mail_responses AS
         SELECT DISTINCT
             mail_no,
             response_mail_no,
@@ -257,8 +318,9 @@ def main():
     # Ensure agg_lookahead has aconex_url directly
     # -------------------------------------------------------------------------
     print("\nEnsuring agg_lookahead has direct Aconex Hyperlinks...")
+    safe_drop(con, "agg_lookahead")
     con.execute("""
-    CREATE OR REPLACE TABLE agg_lookahead AS
+    CREATE TABLE agg_lookahead AS
     SELECT 
         s.workflow_no,
         s.step_name,
@@ -280,8 +342,9 @@ def main():
     # Refresh agg_org_scorecard
     # -------------------------------------------------------------------------
     print("\nRefreshing agg_org_scorecard with updated correspondence...")
+    safe_drop(con, "agg_org_scorecard")
     con.execute("""
-    CREATE OR REPLACE TABLE agg_org_scorecard AS
+    CREATE TABLE agg_org_scorecard AS
     WITH wf_agg AS (
         SELECT 
             assigned_to_organization AS org_name,
@@ -344,10 +407,7 @@ def main():
     
     con.close()
     
-    # Cleanup temp CSVs
-    for c in out_csvs:
-        try: os.remove(c)
-        except Exception: pass
+    # Cached scratch CSVs preserved for fast incremental updates
         
     print("\n" + "=" * 80)
     print(f"MAIL INGESTION & HYPERLINK INTEGRATION COMPLETED IN {time.time()-t_global:.2f}s!")

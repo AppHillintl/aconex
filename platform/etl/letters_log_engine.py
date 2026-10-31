@@ -56,7 +56,13 @@ def build_response_index(con, is_incoming: bool):
     direction_filter = "(m.from_organization ILIKE '%Hill%' OR m.is_outbound_from_hill)" if is_incoming else "(m.to_organization ILIKE '%Hill%' OR m.is_inbound_to_hill)"
     
     rows = con.execute(f"""
-        SELECT m.mail_no, COALESCE(m.reference_number, ''), COALESCE(m.subject, ''), m.sent_date, l.aconex_url
+        SELECT m.mail_no, COALESCE(m.reference_number, ''), COALESCE(m.subject, ''), m.sent_date,
+               COALESCE(
+                   CASE WHEN m.aconex_url LIKE '%MiniURL%' THEN m.aconex_url END,
+                   CASE WHEN l.aconex_url LIKE '%MiniURL%' THEN l.aconex_url END,
+                   l.aconex_url,
+                   m.aconex_url
+               ) as aconex_url
         FROM fact_mail m
         LEFT JOIN mail_aconex_links l ON m.mail_no = l.mail_no
         WHERE {direction_filter}
@@ -94,7 +100,18 @@ def get_mail_aconex_urls(con, mail_numbers):
     for i in range(0, len(clean), chunk_size):
         chunk = clean[i:i + chunk_size]
         placeholders = ','.join(['?'] * len(chunk))
-        q = f"SELECT mail_no, aconex_url FROM mail_aconex_links WHERE mail_no IN ({placeholders})"
+        q = f"""
+            SELECT m.mail_no, 
+                   COALESCE(
+                       CASE WHEN m.aconex_url LIKE '%MiniURL%' THEN m.aconex_url END,
+                       CASE WHEN l.aconex_url LIKE '%MiniURL%' THEN l.aconex_url END,
+                       l.aconex_url,
+                       m.aconex_url
+                   ) as aconex_url
+            FROM fact_mail m
+            LEFT JOIN mail_aconex_links l ON m.mail_no = l.mail_no
+            WHERE m.mail_no IN ({placeholders})
+        """
         for m_no, url in con.execute(q, chunk).fetchall():
             if url:
                 res[m_no.strip().upper()] = url
@@ -232,6 +249,28 @@ def sync_letters_sheet(con, ws, resp_index, is_incoming=True):
                 if due_status_col:
                     ws.cell(r, due_status_col).value = 'Closed'
                 updated_existing += 1
+            elif cur_status not in ['CLS', 'CLOSED', 'NAR']:
+                # Contractual 14-day reply SLA even when the initiator left Due blank.
+                sent_val = ws.cell(r, date_col).value if date_col else None
+                sent_dt = None
+                if hasattr(sent_val, 'year'):
+                    sent_dt = sent_val if getattr(sent_val, 'tzinfo', None) is None else sent_val.replace(tzinfo=None)
+                elif sent_val:
+                    try:
+                        sent_dt = datetime.strptime(str(sent_val)[:10], '%Y-%m-%d')
+                    except Exception:
+                        try:
+                            sent_dt = datetime.strptime(str(sent_val)[:10], '%d/%m/%Y')
+                        except Exception:
+                            sent_dt = None
+                if sent_dt and target_date_col and not ws.cell(r, target_date_col).value:
+                    ws.cell(r, target_date_col).value = (sent_dt + timedelta(days=14)).strftime('%Y-%m-%d')
+                due_dt = sent_dt + timedelta(days=14) if sent_dt else None
+                if due_status_col and due_dt:
+                    if datetime.now() > due_dt:
+                        ws.cell(r, due_status_col).value = 'Overdue'
+                    elif not ws.cell(r, due_status_col).value:
+                        ws.cell(r, due_status_col).value = 'Pending Review'
 
     # 2. Append newly issued letters in Aconex for this sheet
     appended_new = 0
@@ -246,7 +285,13 @@ def sync_letters_sheet(con, ws, resp_index, is_incoming=True):
         direction_sql = "(m.to_organization ILIKE '%Hill%' OR m.is_inbound_to_hill)" if is_incoming else "(m.from_organization ILIKE '%Hill%' OR m.is_outbound_from_hill)"
         
         query_new = f"""
-            SELECT m.mail_no, m.reference_number, m.subject, m.sent_date, m.from_organization, m.to_organization, m.mail_type, m.status, l.aconex_url
+            SELECT m.mail_no, m.reference_number, m.subject, m.sent_date, m.from_organization, m.to_organization, m.mail_type, m.status,
+                   COALESCE(
+                       CASE WHEN m.aconex_url LIKE '%MiniURL%' THEN m.aconex_url END,
+                       CASE WHEN l.aconex_url LIKE '%MiniURL%' THEN l.aconex_url END,
+                       l.aconex_url,
+                       m.aconex_url
+                   ) as aconex_url
             FROM fact_mail m
             LEFT JOIN mail_aconex_links l ON m.mail_no = l.mail_no
             WHERE m.mail_type ILIKE '%Letter%'
@@ -422,4 +467,101 @@ def bulk_sync_all_letters_logs(base_dir: str = r"C:\Users\bimst\Downloads\ACONEX
         "total_new_letters_appended": total_app,
         "total_hyperlinks_added": total_links,
         "files": results
+    }
+
+
+def upload_and_sync_letters_bytes(file_bytes: bytes, filename: str) -> tuple[bytes, dict]:
+    """
+    Accepts an uploaded Letters Excel workbook (.xlsx), synchronizes all sheets in-place
+    with latest Aconex letters, responses, and MiniURL ID hyperlinks, and returns updated bytes.
+    """
+    import io
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+        tmp.write(file_bytes)
+        tmp_path = tmp.name
+    try:
+        is_incoming = ('incoming' in filename.lower()) or ('from' in filename.lower()) or ('inbound' in filename.lower())
+        con = duckdb.connect(DB_PATH, read_only=True)
+        try:
+            resp_index = build_response_index(con, is_incoming=is_incoming)
+            wb = openpyxl.load_workbook(tmp_path)
+            stats = {
+                "filename": filename,
+                "is_incoming": is_incoming,
+                "total_sheets": len(wb.sheetnames),
+                "updated_existing_total": 0,
+                "appended_new_total": 0,
+                "hyperlinks_added_total": 0,
+                "sheet_details": {}
+            }
+            for sname in wb.sheetnames:
+                ws = wb[sname]
+                s_res = sync_letters_sheet(con, ws, resp_index, is_incoming=is_incoming)
+                stats["updated_existing_total"] += s_res["updated_existing"]
+                stats["appended_new_total"] += s_res["appended_new"]
+                stats["hyperlinks_added_total"] += s_res["hyperlinks_added"]
+            out_buf = io.BytesIO()
+            wb.save(out_buf)
+            out_buf.seek(0)
+            return out_buf.getvalue(), stats
+        finally:
+            con.close()
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+
+
+def sync_or_generate_direction_letters_logs(folder_path: str = r"C:\Users\bimst\Downloads\ACONEX\Logs", project_id: str = None) -> dict:
+    """
+    Synchronizes any existing Letters Excel logs inside folder_path, AND generates/updates
+    dedicated 'From Contractor (Inbound)' and 'To Contractor (Outbound)' Excel logs inside folder_path
+    for the specified project_id (or all active packages if project_id is None / 'ALL').
+    """
+    import excel_export_service as ees
+    os.makedirs(folder_path, exist_ok=True)
+    # 1. Sync any existing Letters log files in folder_path in-place
+    existing_sync = bulk_sync_all_letters_logs(folder_path)
+
+    # 2. Generate/update From Contractor & To Contractor Excel logs for target project(s)
+    con = duckdb.connect(DB_PATH, read_only=True)
+    try:
+        if project_id and project_id.upper() != "ALL":
+            target_pkgs = [project_id]
+        else:
+            rows = con.execute("SELECT project_id FROM dim_project_packages ORDER BY sort_order ASC").fetchall()
+            target_pkgs = [r[0] for r in rows if r[0]]
+    finally:
+        con.close()
+
+    generated_files = []
+    for pkg in target_pkgs:
+        safe_pkg = re.sub(r'[^a-zA-Z0-9_\-]', '_', pkg)
+        for dir_key, dir_label in [('inbound', 'From_Contractor'), ('outbound', 'To_Contractor')]:
+            fpath = os.path.join(folder_path, f"{safe_pkg}_Letters_{dir_label}_Log.xlsx")
+            excel_bytes, _ = ees.generate_filtered_excel_export(
+                project_id=pkg,
+                category='letters',
+                direction=dir_key,
+                limit=10000
+            )
+            with open(fpath, "wb") as f:
+                f.write(excel_bytes)
+            generated_files.append({
+                "project_id": pkg,
+                "direction": dir_label,
+                "filename": os.path.basename(fpath),
+                "file_path": fpath
+            })
+
+    return {
+        "status": "success",
+        "folder_path": folder_path,
+        "existing_logs_synced": existing_sync.get("total_files_synced", 0),
+        "direction_logs_updated": len(generated_files),
+        "generated_files": generated_files,
+        "existing_sync_details": existing_sync
     }

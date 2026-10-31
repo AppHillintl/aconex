@@ -22,7 +22,8 @@ def generate_filtered_excel_export(
     sort: str = None,
     from_org: str = None,
     to_org: str = None,
-    limit: int = 5000
+    direction: str = None,
+    limit: int = 50000
 ) -> tuple[bytes, str]:
     """
     Generates a professionally styled Excel workbook containing exactly the filtered and sorted data
@@ -75,6 +76,7 @@ def generate_filtered_excel_export(
         # 2. Query data based on category
         filter_summary_parts = []
         if search: filter_summary_parts.append(f"Search: '{search}'")
+        if direction: filter_summary_parts.append(f"Direction: {'From Contractor (Inbound)' if direction == 'inbound' else ('To Contractor (Outbound)' if direction == 'outbound' else direction)}")
         if from_org: filter_summary_parts.append(f"From Org: {from_org}")
         if to_org: filter_summary_parts.append(f"To Org: {to_org}")
         if status: filter_summary_parts.append(f"Status: {status}")
@@ -97,7 +99,7 @@ def generate_filtered_excel_export(
                 ws.title = "Documents Register"
             headers = ["Document No", "Title", "Discipline", "Doc Type", "Status", "Review Status", "Revision", "Version", "Date Modified", "Aconex Link"]
             
-            filters = [f"project_package = '{project_id}'"]
+            filters = [f"project_package = '{project_id}'", "from_organization NOT ILIKE '%Hill Inter%'"]
             if cat_clean == 'shop_drawings':
                 filters.append("(doc_type ILIKE '%Drawing%' OR doc_type IN ('Drawing', 'Shop Drawing', 'As-Built', 'Sketch'))")
             elif cat_clean == 'material_submittals':
@@ -129,7 +131,12 @@ def generate_filtered_excel_export(
             where_sql = f"WHERE {' AND '.join(filters)}"
             rows = con.execute(f"""
                 SELECT document_no, title, discipline_name, doc_type, status, review_status, revision, version_number,
-                       date_modified::VARCHAR, COALESCE(aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=DOC-SUPERSEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=documentNumber%3A' || document_no) as aconex_url
+                       date_modified::VARCHAR, 
+                       CASE 
+                           WHEN document_id IS NOT NULL AND LENGTH(TRIM(document_id)) > 3 AND document_id != 'None'
+                           THEN 'https://mea.aconex.com/ViewDoc?trackingid=' || document_id || '&projectid=1744833878&docno=' || document_no || '&username=aabdelrahim4&action=ViewDocumentSummary'
+                           ELSE 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=DOC-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=documentNumber%3A%22' || document_no || '%22'
+                       END as aconex_url
                 FROM dim_documents
                 {where_sql}
                 ORDER BY {order_by}
@@ -137,15 +144,21 @@ def generate_filtered_excel_export(
             """).fetchall()
 
         elif cat_clean in ['mail', 'letters', 'other_mail', 'hill_ssc']:
+            dir_clean = (direction or '').strip().lower()
             if cat_clean == 'letters':
-                ws.title = "Letters Register"
+                if dir_clean == 'outbound':
+                    ws.title = "Letters - To Contractor"
+                elif dir_clean == 'all':
+                    ws.title = "Letters - All Directions"
+                else:
+                    ws.title = "Letters - From Contractor"
             elif cat_clean == 'hill_ssc':
                 ws.title = "Hill & SSC Letters"
             elif cat_clean == 'other_mail':
                 ws.title = "Other Correspondence"
             else:
                 ws.title = "Correspondence Log"
-            headers = ["Mail No", "Mail Type", "Subject", "Reference No", "From Org", "To Org", "Sent Date", "Due Date", "Days Late", "Status", "Overdue", "Aconex Link"]
+            headers = ["Mail No", "Direction", "Mail Type", "Subject", "Reference No", "From Org", "To Org", "Sent Date", "Due Date", "Days Late", "Status", "Response Mail No", "Response Date", "Overdue", "Aconex Link"]
             
             filters = []
             if cat_clean == 'hill_ssc':
@@ -160,10 +173,34 @@ def generate_filtered_excel_export(
                 )""")
                 if project_id != 'ALL':
                     filters.append(f"(m.project_package = '{project_id}' OR m.subject ILIKE '%{project_id}%')")
+                if dir_clean == 'inbound':
+                    filters.append("(m.from_name ILIKE '%ahmed abdelrahim%' OR m.from_organization ILIKE '%Shaker%' OR m.from_organization ILIKE '%ECG%')")
+                elif dir_clean == 'outbound':
+                    filters.append("(m.subject ILIKE '%3120%' OR m.to_organization ILIKE '%Shaker%' OR m.to_organization ILIKE '%ECG%')")
             else:
                 filters.append(f"m.project_package = '{project_id}'")
                 if cat_clean == 'letters':
                     filters.append("m.mail_type = 'Letter'")
+                    if dir_clean == 'outbound':
+                        if project_id == 'DP05':
+                            filters.append("(m.to_organization ILIKE '%Orascom%' OR m.from_organization ILIKE '%Hill%' OR m.is_outbound_from_hill = true)")
+                        elif project_id == 'DP06':
+                            filters.append("(m.to_organization ILIKE '%Hassan Allam%' OR m.from_organization ILIKE '%Hill%' OR m.is_outbound_from_hill = true)")
+                        elif project_id == 'DP07':
+                            filters.append("(m.to_organization ILIKE '%CSCEC%' OR m.from_organization ILIKE '%Hill%' OR m.is_outbound_from_hill = true)")
+                        else:
+                            filters.append("(m.is_outbound_from_hill = true OR m.from_organization ILIKE '%Hill%')")
+                    elif dir_clean == 'all':
+                        pass
+                    elif not from_org and not to_org:
+                        if project_id == 'DP05':
+                            filters.append("(m.from_organization ILIKE '%Orascom%' AND m.from_organization NOT ILIKE '%Hill%')")
+                        elif project_id == 'DP06':
+                            filters.append("(m.from_organization ILIKE '%Hassan Allam%' AND m.from_organization NOT ILIKE '%Hill%')")
+                        elif project_id == 'DP07':
+                            filters.append("(m.from_organization ILIKE '%CSCEC%' AND m.from_organization NOT ILIKE '%Hill%')")
+                        else:
+                            filters.append("m.from_organization NOT ILIKE '%Hill%'")
                 elif cat_clean == 'other_mail':
                     filters.append("(m.mail_type != 'Letter' AND m.mail_type NOT ILIKE '%RFI%' AND m.mail_type != 'Request For Information' AND m.mail_type NOT ILIKE '%Clarification%')")
 
@@ -171,9 +208,9 @@ def generate_filtered_excel_export(
                 s_c = search.replace("'", "''")
                 filters.append(f"(m.mail_no ILIKE '%{s_c}%' OR m.subject ILIKE '%{s_c}%' OR m.from_organization ILIKE '%{s_c}%' OR m.to_organization ILIKE '%{s_c}%' OR m.reference_number ILIKE '%{s_c}%')")
             if from_org:
-                filters.append(f"m.from_organization = '{from_org.replace("'", "''")}'")
+                filters.append(f"m.from_organization ILIKE '%{from_org.replace("'", "''")}%'")
             if to_org:
-                filters.append(f"m.to_organization = '{to_org.replace("'", "''")}'")
+                filters.append(f"m.to_organization ILIKE '%{to_org.replace("'", "''")}%'")
             if mail_type:
                 filters.append(f"m.mail_type = '{mail_type.replace("'", "''")}'")
             if status:
@@ -194,11 +231,25 @@ def generate_filtered_excel_export(
 
             where_sql = f"WHERE {' AND '.join(filters)}"
             rows = con.execute(f"""
-                SELECT m.mail_no, m.mail_type, m.subject, COALESCE(m.reference_number, m.mail_no), m.from_organization, m.to_organization,
-                       m.sent_date::VARCHAR, m.due_date::VARCHAR, m.days_late, m.status, CASE WHEN m.is_overdue THEN 'OVERDUE' ELSE 'ON TRACK' END,
-                        COALESCE(l.aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A' || m.mail_no) as aconex_url
+                SELECT m.mail_no,
+                       CASE WHEN m.from_organization ILIKE '%Hill%' OR m.is_outbound_from_hill = true THEN 'To Contractor (Outbound)' ELSE 'From Contractor (Inbound)' END AS direction_lbl,
+                       m.mail_type, m.subject, COALESCE(m.reference_number, m.mail_no), m.from_organization, m.to_organization,
+                       m.sent_date::VARCHAR, m.due_date::VARCHAR, m.days_late, m.status,
+                       COALESCE(resp.response_mail_no, '-'),
+                       COALESCE(resp.response_sent_date::VARCHAR, '-'),
+                       CASE WHEN m.is_overdue THEN 'OVERDUE' ELSE 'ON TRACK' END,
+                       COALESCE(
+                           CASE WHEN m.aconex_url LIKE '%MiniURL%' THEN m.aconex_url END,
+                           CASE WHEN l.aconex_url LIKE '%MiniURL%' THEN l.aconex_url END,
+                           'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A%22' || m.mail_no || '%22'
+                       ) as aconex_url
                 FROM fact_mail m
                 LEFT JOIN mail_aconex_links l ON m.mail_no = l.mail_no
+                LEFT JOIN (
+                    SELECT mail_no, MAX(response_mail_no) as response_mail_no, MAX(response_sent_date) as response_sent_date
+                    FROM fact_mail_responses
+                    GROUP BY mail_no
+                ) resp ON m.mail_no = resp.mail_no
                 {where_sql}
                 ORDER BY {order_by}
                 LIMIT {limit}
@@ -229,11 +280,16 @@ def generate_filtered_excel_export(
                 order_by = "is_overdue DESC, sent_date DESC NULLS LAST"
                 where_sql = f"WHERE {' AND '.join(filters)}"
                 rows = con.execute(f"""
-                    SELECT mail_no, mail_type, subject, from_organization, to_organization,
-                           status, sent_date::VARCHAR, due_date::VARCHAR, days_late,
-                           CASE WHEN is_overdue THEN 'OVERDUE' ELSE 'ON TRACK' END,
-                           COALESCE(aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A' || mail_no) as aconex_url
-                    FROM fact_mail
+                    SELECT m.mail_no, m.mail_type, m.subject, m.from_organization, m.to_organization,
+                           m.status, m.sent_date::VARCHAR, m.due_date::VARCHAR, m.days_late,
+                           CASE WHEN m.is_overdue THEN 'OVERDUE' ELSE 'ON TRACK' END,
+                           COALESCE(
+                               CASE WHEN m.aconex_url LIKE '%MiniURL%' THEN m.aconex_url END,
+                               CASE WHEN l.aconex_url LIKE '%MiniURL%' THEN l.aconex_url END,
+                               'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A%22' || m.mail_no || '%22'
+                           ) as aconex_url
+                    FROM fact_mail m
+                    LEFT JOIN mail_aconex_links l ON m.mail_no = l.mail_no
                     {where_sql}
                     ORDER BY {order_by}
                     LIMIT {limit}
@@ -241,24 +297,27 @@ def generate_filtered_excel_export(
             else:
                 ws.title = "RFIs Register"
                 headers = ["RFI No", "Reference No", "Subject", "From Org", "To Org", "Status", "Sent Date", "Due Date", "Days Late", "Overdue", "Aconex Link"]
-                filters = [f"project_package = '{project_id}'"]
+                filters = [
+                    f"(r.project_package = '{project_id}' OR r.subject ILIKE '%{project_id}%' OR r.mail_no ILIKE '%{project_id}%')",
+                    "r.from_organization NOT ILIKE '%Hill Inter%'"
+                ]
                 if search:
                     s_c = search.replace("'", "''")
-                    filters.append(f"(mail_no ILIKE '%{s_c}%' OR subject ILIKE '%{s_c}%' OR from_organization ILIKE '%{s_c}%')")
+                    filters.append(f"(r.mail_no ILIKE '%{s_c}%' OR r.subject ILIKE '%{s_c}%' OR r.from_organization ILIKE '%{s_c}%')")
                 if from_org:
-                    filters.append(f"from_organization = '{from_org.replace("'", "''")}'")
+                    filters.append(f"r.from_organization = '{from_org.replace("'", "''")}'")
                 if to_org:
-                    filters.append(f"to_organization = '{to_org.replace("'", "''")}'")
+                    filters.append(f"r.to_organization = '{to_org.replace("'", "''")}'")
                 if mail_type:
-                    filters.append(f"(mail_type = '{mail_type.replace("'", "''")}' OR mail_no LIKE '%-RFI-%')")
+                    filters.append(f"(r.mail_no LIKE '%-RFI-%')")
                 if status:
-                    filters.append(f"status = '{status.replace("'", "''")}'")
+                    filters.append(f"r.status = '{status.replace("'", "''")}'")
                 if is_overdue in ['true', 'yes', '1']:
-                    filters.append("is_overdue = true")
+                    filters.append("r.is_overdue = true")
 
-                order_by = "is_overdue DESC, sent_date DESC NULLS LAST"
+                order_by = "r.is_overdue DESC, r.sent_date DESC NULLS LAST"
                 if sort:
-                    cols_map = {'mail_no': 'mail_no', 'subject': 'subject', 'from_org': 'from_organization', 'to_org': 'to_organization', 'sent_date': 'sent_date', 'due_date': 'due_date', 'status': 'status'}
+                    cols_map = {'mail_no': 'r.mail_no', 'subject': 'r.subject', 'from_org': 'r.from_organization', 'to_org': 'r.to_organization', 'sent_date': 'r.sent_date', 'due_date': 'r.due_date', 'status': 'r.status'}
                     clauses = []
                     for t in sort.split(','):
                         parts = t.strip().split()
@@ -269,11 +328,16 @@ def generate_filtered_excel_export(
 
                 where_sql = f"WHERE {' AND '.join(filters)}"
                 rows = con.execute(f"""
-                    SELECT mail_no, mail_no, subject, from_organization, to_organization,
-                           status, sent_date::VARCHAR, due_date::VARCHAR, days_late,
-                           CASE WHEN is_overdue THEN 'OVERDUE' ELSE 'ON TRACK' END,
-                           COALESCE(aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A' || mail_no) as aconex_url
-                    FROM fact_rfis
+                    SELECT r.mail_no, r.mail_no, r.subject, r.from_organization, r.to_organization,
+                           r.status, r.sent_date::VARCHAR, r.due_date::VARCHAR, r.days_late,
+                           CASE WHEN r.is_overdue THEN 'OVERDUE' ELSE 'ON TRACK' END,
+                           COALESCE(
+                               CASE WHEN r.aconex_url LIKE '%MiniURL%' THEN r.aconex_url END,
+                               CASE WHEN l.aconex_url LIKE '%MiniURL%' THEN l.aconex_url END,
+                               'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A%22' || r.mail_no || '%22'
+                           ) as aconex_url
+                    FROM fact_rfis r
+                    LEFT JOIN mail_aconex_links l ON r.mail_no = l.mail_no
                     {where_sql}
                     ORDER BY {order_by}
                     LIMIT {limit}
@@ -283,7 +347,7 @@ def generate_filtered_excel_export(
             ws.title = "Workflows Register"
             headers = ["Workflow No", "Workflow Name", "Status", "Initiator Org", "Assigned Org", "Assigned User", "Current Step", "Overdue Steps", "Start Date", "Due Date", "Aconex Link"]
             
-            filters = [f"project_package = '{project_id}'"]
+            filters = [f"project_package = '{project_id}'", "from_organization NOT ILIKE '%Hill Inter%'"]
             if search:
                 s_c = search.replace("'", "''")
                 filters.append(f"(workflow_no ILIKE '%{s_c}%' OR workflow_name ILIKE '%{s_c}%' OR initiator_organization ILIKE '%{s_c}%')")
@@ -411,7 +475,15 @@ def generate_filtered_excel_export(
         wb.save(out_buf)
         out_buf.seek(0)
 
-        filename = f"{project_id}_{cat_clean.capitalize()}_Export_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+        dir_tag = ""
+        if cat_clean == 'letters' and direction:
+            if direction.lower() == 'inbound':
+                dir_tag = "_From_Contractor"
+            elif direction.lower() == 'outbound':
+                dir_tag = "_To_Contractor"
+            elif direction.lower() == 'all':
+                dir_tag = "_All_Directions"
+        filename = f"{project_id}_{cat_clean.capitalize()}{dir_tag}_Log_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
         return out_buf.getvalue(), filename
     finally:
         con.close()
