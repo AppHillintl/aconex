@@ -111,6 +111,59 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# -----------------------------------------------------------------------------
+# HILL INTERNATIONAL CORPORATE AUTHENTICATION SESSION STORE & PROTECTION
+# -----------------------------------------------------------------------------
+import uuid
+HILL_SESSIONS = {}
+PROJECT_ACCESS_KEY = os.environ.get("PROJECT_ACCESS_KEY", "HILL-REH-2026")
+
+@app.middleware("http")
+async def hill_corporate_auth_middleware(request: Request, call_next):
+    path = request.url.path
+    # Exempt non-API routes and public auth endpoints
+    exempt_paths = [
+        "/api/auth/hill-login",
+        "/api/auth/hill-session",
+        "/api/auth/hill-logout",
+        "/api/auth/verify-admin",
+        "/api/auth/check-admin",
+        "/openapi.json",
+        "/docs",
+        "/redoc"
+    ]
+    if path.startswith("/api/") and path not in exempt_paths and request.method != "OPTIONS":
+        # Extract token
+        token = request.headers.get("x-hill-token", "")
+        if not token:
+            auth_header = request.headers.get("Authorization", "")
+            if auth_header.startswith("Bearer "):
+                token = auth_header[7:].strip()
+        if not token:
+            token = request.cookies.get("hill_token", "")
+            
+        is_authenticated = (token in HILL_SESSIONS)
+        
+        # Check if admin pin was supplied
+        if not is_authenticated:
+            try:
+                verify_admin_request(request)
+                is_authenticated = True
+            except Exception:
+                pass
+                
+        if not is_authenticated:
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "error": "Unauthorized",
+                    "detail": "Hill Corporate Authentication Required. Please login with your @hillintl.com email."
+                }
+            )
+            
+    return await call_next(request)
+
 @app.middleware("http")
 async def add_cache_control_headers(request: Request, call_next):
     response = await call_next(request)
@@ -4169,6 +4222,117 @@ def verify_admin_request(request: Request):
         status_code=403, 
         detail="Unauthorized: System configuration, email routing matrices, and data pipeline controls are restricted to the Project Controls Administrator."
     )
+
+
+# -----------------------------------------------------------------------------
+# HILL INTERNATIONAL CORPORATE AUTHENTICATION ENDPOINTS
+# -----------------------------------------------------------------------------
+@app.post("/api/auth/hill-login")
+async def hill_login_api(request: Request):
+    """Authenticates Hill International personnel against Aconex Project Directory."""
+    body = await request.json()
+    email = str(body.get("email", "")).strip().lower()
+    passcode = str(body.get("passcode", "")).strip()
+
+    if not email:
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "message": "Please enter your corporate email address."}
+        )
+
+    if not email.endswith("@hillintl.com"):
+        return JSONResponse(
+            status_code=403,
+            content={"success": False, "message": "Access Denied: Only corporate email addresses ending with '@hillintl.com' are permitted."}
+        )
+
+    # Check dim_user_directory
+    con = get_db()
+    row = None
+    try:
+        row = con.execute("""
+            SELECT user_name, COALESCE(position, 'Hill International Team Member'), organization_name
+            FROM dim_user_directory
+            WHERE LOWER(TRIM(email)) = ?
+              AND (organization_name ILIKE '%Hill%' OR email ILIKE '%@hillintl.com%')
+            LIMIT 1
+        """, [email]).fetchone()
+    except Exception as e:
+        row = None
+    finally:
+        con.close()
+
+    # Lead fallback
+    if not row and email == "mohamedmeneaem@hillintl.com":
+        row = ("Mohamed Wagih", "Senior BIM Engineer", "Hill International (North Africa), Ltd")
+
+    if not row:
+        return JSONResponse(
+            status_code=403,
+            content={
+                "success": False, 
+                "message": f"Unauthorized User: The email '{email}' is not registered in the Ras El Hekma Project Directory. Please contact Mohamed Meneaem (Project Controls Lead)."
+            }
+        )
+
+    if passcode != PROJECT_ACCESS_KEY:
+        return JSONResponse(
+            status_code=401,
+            content={"success": False, "message": "Invalid Project Access Passcode. Please check with your Project Controls Administrator."}
+        )
+
+    # Success: Create session token
+    token = f"hill_{uuid.uuid4().hex}"
+    user_info = {
+        "email": email,
+        "name": row[0] or email.split("@")[0].capitalize(),
+        "position": row[1] or "Project Controls Team",
+        "org": row[2] or "Hill International"
+    }
+    HILL_SESSIONS[token] = user_info
+
+    resp = JSONResponse({
+        "success": True,
+        "token": token,
+        "user": user_info,
+        "message": f"Welcome Eng. {user_info['name']} ({user_info['position']})!"
+    })
+    resp.set_cookie("hill_token", token, max_age=86400 * 30, httponly=False, samesite="lax")
+    return resp
+
+
+@app.get("/api/auth/hill-session")
+def hill_session_api(request: Request):
+    """Validates the current session token."""
+    token = request.headers.get("x-hill-token", "")
+    if not token:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:].strip()
+    if not token:
+        token = request.cookies.get("hill_token", "")
+        
+    if token and token in HILL_SESSIONS:
+        return {"authenticated": True, "user": HILL_SESSIONS[token]}
+    return {"authenticated": False}
+
+
+@app.post("/api/auth/hill-logout")
+def hill_logout_api(request: Request):
+    """Signs out user and invalidates session token."""
+    token = request.headers.get("x-hill-token", "")
+    if not token:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:].strip()
+    if not token:
+        token = request.cookies.get("hill_token", "")
+    if token in HILL_SESSIONS:
+        del HILL_SESSIONS[token]
+    resp = JSONResponse({"success": True, "message": "Signed out successfully."})
+    resp.delete_cookie("hill_token")
+    return resp
+
 
 @app.post("/api/auth/verify-admin")
 async def verify_admin_pin_api(request: Request):

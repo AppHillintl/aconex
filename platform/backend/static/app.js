@@ -1,4 +1,146 @@
 
+// =============================================================================
+// HILL INTERNATIONAL CORPORATE AUTHENTICATION & FETCH INTERCEPTOR
+// =============================================================================
+const _originalFetch = window.fetch;
+window.fetch = function(url, options = {}) {
+    options = options || {};
+    options.headers = options.headers || {};
+    const token = localStorage.getItem('hill_auth_token');
+    if (token) {
+        if (options.headers instanceof Headers) {
+            options.headers.set('x-hill-token', token);
+            options.headers.set('Authorization', 'Bearer ' + token);
+        } else if (Array.isArray(options.headers)) {
+            options.headers.push(['x-hill-token', token]);
+            options.headers.push(['Authorization', 'Bearer ' + token]);
+        } else {
+            options.headers['x-hill-token'] = token;
+            options.headers['Authorization'] = 'Bearer ' + token;
+        }
+    }
+    return _originalFetch(url, options).then(res => {
+        if (res.status === 401 && typeof url === 'string' && url.startsWith('/api/') && !url.includes('/api/auth/')) {
+            showHillLoginGate();
+        }
+        return res;
+    });
+};
+
+async function checkHillAuthSession() {
+    const token = localStorage.getItem('hill_auth_token');
+    if (!token) {
+        showHillLoginGate();
+        return false;
+    }
+    try {
+        const res = await _originalFetch('/api/auth/hill-session', {
+            headers: { 'x-hill-token': token, 'Authorization': 'Bearer ' + token }
+        });
+        const data = await res.json();
+        if (data.authenticated && data.user) {
+            renderHillUserBadge(data.user);
+            hideHillLoginGate();
+            return true;
+        } else {
+            localStorage.removeItem('hill_auth_token');
+            showHillLoginGate();
+            return false;
+        }
+    } catch (e) {
+        showHillLoginGate();
+        return false;
+    }
+}
+
+function showHillLoginGate() {
+    const gate = document.getElementById('hill-login-gate');
+    if (gate) gate.classList.remove('hidden');
+    const badge = document.getElementById('hill-auth-user-badge');
+    if (badge) badge.classList.add('hidden');
+}
+
+function hideHillLoginGate() {
+    const gate = document.getElementById('hill-login-gate');
+    if (gate) gate.classList.add('hidden');
+}
+
+function renderHillUserBadge(user) {
+    const badge = document.getElementById('hill-auth-user-badge');
+    const initialEl = document.getElementById('hill-badge-initial');
+    const nameEl = document.getElementById('hill-badge-name');
+    const posEl = document.getElementById('hill-badge-position');
+    if (badge && user) {
+        if (initialEl) initialEl.innerText = (user.name || 'H').charAt(0).toUpperCase();
+        if (nameEl) nameEl.innerText = user.name || 'Hill Engineer';
+        if (posEl) posEl.innerText = user.position || 'Project Controls';
+        badge.classList.remove('hidden');
+    }
+}
+
+async function handleHillLogin(event) {
+    if (event) event.preventDefault();
+    const email = document.getElementById('hill-email-input').value.trim();
+    const passcode = document.getElementById('hill-passcode-input').value.trim();
+    const errBox = document.getElementById('hill-login-error');
+    const btn = document.getElementById('hill-login-btn');
+    
+    if (errBox) { errBox.classList.add('hidden'); errBox.innerText = ''; }
+    if (btn) { btn.disabled = true; btn.innerText = 'Verifying credentials...'; }
+
+    try {
+        const res = await _originalFetch('/api/auth/hill-login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, passcode })
+        });
+        const data = await res.json();
+        if (res.ok && data.success && data.token) {
+            localStorage.setItem('hill_auth_token', data.token);
+            renderHillUserBadge(data.user);
+            hideHillLoginGate();
+            // Reload all dashboard sections seamlessly
+            if (typeof loadAllProjects === 'function') loadAllProjects();
+            if (typeof fetchFeedSummary === 'function') fetchFeedSummary();
+            if (typeof fetchOverviewKPIs === 'function') fetchOverviewKPIs();
+        } else {
+            if (errBox) {
+                errBox.innerText = data.message || 'Authentication failed. Please check credentials.';
+                errBox.classList.remove('hidden');
+            }
+        }
+    } catch (e) {
+        if (errBox) {
+            errBox.innerText = 'Network error during authentication. Please retry.';
+            errBox.classList.remove('hidden');
+        }
+    } finally {
+        if (btn) { btn.disabled = false; btn.innerHTML = '<span>🔐</span> Authenticate & Enter Dashboard'; }
+    }
+}
+
+async function hillLogout() {
+    const token = localStorage.getItem('hill_auth_token');
+    try {
+        await _originalFetch('/api/auth/hill-logout', {
+            method: 'POST',
+            headers: { 'x-hill-token': token }
+        });
+    } catch (e) {}
+    localStorage.removeItem('hill_auth_token');
+    showHillLoginGate();
+    window.location.reload();
+}
+
+// Auto-run auth verification immediately
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', checkHillAuthSession);
+} else {
+    checkHillAuthSession();
+}
+
+
+
 function onLettersPeriodPresetChange(preset) {
     const fIn = document.getElementById('sub-letters-from-date');
     const tIn = document.getElementById('sub-letters-to-date');
