@@ -9468,7 +9468,7 @@
             <div id="hill-login-error" class="hidden mb-4 p-3 rounded-xl bg-red-950/70 border border-red-800/80 text-red-200 text-xs leading-relaxed"></div>
             <div id="hill-login-success" class="hidden mb-4 p-3 rounded-xl bg-emerald-950/70 border border-emerald-800/80 text-emerald-200 text-xs leading-relaxed"></div>
 
-            <!-- Auth Form -->
+                        <!-- Auth Form -->
             <form id="hill-login-form" onsubmit="handleHillAuthSubmit(event)" class="space-y-4">
                 <div>
                     <label class="block text-xs font-bold text-slate-300 mb-1.5 uppercase tracking-wider">
@@ -9481,11 +9481,11 @@
                     </div>
                 </div>
 
-                <!-- Personal Password (Login Mode) -->
+                <!-- Password (Login Mode) -->
                 <div id="hill-password-group">
                     <div class="flex items-center justify-between mb-1.5">
                         <label class="text-xs font-bold text-slate-300 uppercase tracking-wider">
-                            Personal Password:
+                            Password:
                         </label>
                         <a href="javascript:void(0)" onclick="toggleAuthMode('reset')" class="text-[11px] text-sky-400 hover:text-sky-300 transition-colors">
                             Forgot Password?
@@ -9493,16 +9493,16 @@
                     </div>
                     <div class="relative">
                         <input type="password" id="hill-passcode-input"
-                            placeholder="Enter your personal password"
+                            placeholder="Enter your password"
                             class="w-full bg-slate-950/80 border border-slate-700/80 rounded-xl px-4 py-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 transition-all font-mono" />
                     </div>
                 </div>
 
-                <!-- Setup / Reset Fields (Only shown in register/reset mode) -->
+                <!-- Reset Password Fields (Only shown in reset mode) -->
                 <div id="hill-setup-fields" class="hidden space-y-4 pt-1 border-t border-slate-800/80">
                     <div>
                         <label class="block text-xs font-bold text-sky-400 mb-1.5 uppercase tracking-wider">
-                            Create Personal Password:
+                            New Password:
                         </label>
                         <input type="password" id="hill-new-password-input"
                             placeholder="Minimum 6 characters"
@@ -9516,26 +9516,17 @@
                             placeholder="Re-enter password"
                             class="w-full bg-slate-950/80 border border-slate-700/80 rounded-xl px-4 py-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 transition-all font-mono" />
                     </div>
-                    <div>
-                        <label class="block text-xs font-bold text-amber-400 mb-1.5 uppercase tracking-wider">
-                            Project Authority Passcode:
-                        </label>
-                        <input type="password" id="hill-project-key-input"
-                            placeholder="Enter project activation key (HILL-REH-2026)"
-                            class="w-full bg-slate-950/80 border border-slate-700/80 rounded-xl px-4 py-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 transition-all font-mono" />
-                        <span class="block text-[10px] text-slate-500 mt-1">Required to authorize individual account activation.</span>
-                    </div>
                 </div>
 
                 <button type="submit" id="hill-login-btn"
                     class="w-full mt-2 py-3.5 px-4 rounded-xl bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white font-extrabold text-sm shadow-lg shadow-sky-500/25 transition-all flex items-center justify-center gap-2 cursor-pointer">
-                    <span>🔐</span> Authenticate & Enter Dashboard
+                    <span>🔐</span> Sign In to Dashboard
                 </button>
             </form>
 
             <div class="mt-4 text-center">
-                <a href="javascript:void(0)" id="hill-toggle-mode-btn" onclick="toggleAuthMode('register')" class="text-xs text-sky-400 hover:text-sky-300 transition-colors font-semibold">
-                    First time here? Create your personal password →
+                <a href="javascript:void(0)" id="hill-toggle-mode-btn" onclick="toggleAuthMode('reset')" class="text-xs text-sky-400 hover:text-sky-300 transition-colors font-semibold hidden">
+                    Forgot Password?
                 </a>
             </div>
 

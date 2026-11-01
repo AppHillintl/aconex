@@ -4251,10 +4251,10 @@ def verify_admin_request(request: Request):
 # -----------------------------------------------------------------------------
 @app.post("/api/auth/hill-login")
 async def hill_login_api(request: Request):
-    """Authenticates Hill International personnel against Aconex Project Directory."""
+    """Authenticates Hill International personnel against Aconex Project Directory using email & personal password."""
     body = await request.json()
     email = str(body.get("email", "")).strip().lower()
-    passcode = str(body.get("passcode", "")).strip()
+    password = str(body.get("password") or body.get("passcode") or "").strip()
 
     if not email:
         return JSONResponse(
@@ -4266,6 +4266,12 @@ async def hill_login_api(request: Request):
         return JSONResponse(
             status_code=403,
             content={"success": False, "message": "Access Denied: Only corporate email addresses ending with '@hillintl.com' are permitted."}
+        )
+
+    if not password:
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "message": "Please enter your password."}
         )
 
     # Check dim_user_directory
@@ -4293,7 +4299,7 @@ async def hill_login_api(request: Request):
             status_code=403,
             content={
                 "success": False, 
-                "message": f"Unauthorized User: The email '{email}' is not registered in the Ras El Hekma Project Directory. Please contact Mohamed Meneaem (Project Controls Lead)."
+                "message": f"Unauthorized User: The email '{email}' is not registered in the Ras El Hekma Project Directory."
             }
         )
 
@@ -4305,50 +4311,39 @@ async def hill_login_api(request: Request):
     finally:
         con_auth.close()
 
-    # If user has not created a password yet
+    # If first time logging in: automatically set their chosen password!
     if not cred:
-        # If user supplied the project setup key as passcode, trigger password setup
-        if passcode == PROJECT_ACCESS_KEY:
+        if len(password) < 6:
             return JSONResponse(
-                status_code=200,
-                content={
-                    "success": False,
-                    "needs_password_setup": True,
-                    "user_name": row[0],
-                    "message": "First-time setup: Please create your individual personal password."
-                }
+                status_code=400,
+                content={"success": False, "message": "First-time setup: Password must be at least 6 characters long."}
             )
-        return JSONResponse(
-            status_code=200,
-            content={
-                "success": False,
-                "needs_password_setup": True,
-                "user_name": row[0],
-                "message": "Welcome! You have not created a personal password yet. Please create your password to secure your account."
-            }
-        )
-
-    # User has a personal password: verify hash or master project key
-    is_valid_pwd = cred_s.verify_password(passcode, cred["password_hash"], cred["salt"])
-    if not is_valid_pwd and passcode != PROJECT_ACCESS_KEY:
-        return JSONResponse(
-            status_code=401,
-            content={"success": False, "message": "Incorrect password. Please verify your credentials or click 'Reset Password'."}
-        )
-
-    # Record login
-    con_log = get_db()
-    try:
-        cred_s.record_user_login(con_log, email)
-    finally:
-        con_log.close()
+        con_reg = get_db()
+        try:
+            cred_s.save_user_credential(con_reg, email, password)
+            cred_s.record_user_login(con_reg, email)
+        finally:
+            con_reg.close()
+    else:
+        # Existing password: verify it
+        is_valid_pwd = cred_s.verify_password(password, cred["password_hash"], cred["salt"])
+        if not is_valid_pwd and password != PROJECT_ACCESS_KEY:
+            return JSONResponse(
+                status_code=401,
+                content={"success": False, "message": "Incorrect password. Please verify your password or click 'Forgot Password'."}
+            )
+        con_log = get_db()
+        try:
+            cred_s.record_user_login(con_log, email)
+        finally:
+            con_log.close()
 
     # Success: Create session token
     token = f"hill_{uuid.uuid4().hex}"
     user_info = {
         "email": email,
         "name": row[0] or email.split("@")[0].capitalize(),
-        "position": row[1] or "Project Controls Team",
+        "position": row[1] or "Hill International Team Member",
         "org": row[2] or "Hill International"
     }
     HILL_SESSIONS[token] = user_info
@@ -4363,69 +4358,18 @@ async def hill_login_api(request: Request):
     return resp
 
 
-
-@app.post("/api/auth/check-user")
-async def check_user_status_api(request: Request):
-    """Checks user eligibility and whether they have configured a personal password."""
-    body = await request.json()
-    email = str(body.get("email", "")).strip().lower()
-
-    if not email or not email.endswith("@hillintl.com"):
-        return JSONResponse(status_code=400, content={"success": False, "message": "Please enter a valid @hillintl.com email address."})
-
-    con = get_db()
-    row = None
-    has_pwd = False
-    try:
-        row = con.execute("""
-            SELECT user_name, COALESCE(position, 'Hill International Team Member'), organization_name
-            FROM dim_user_directory
-            WHERE LOWER(TRIM(email)) = ?
-              AND (organization_name ILIKE '%Hill%' OR email ILIKE '%@hillintl.com%')
-            LIMIT 1
-        """, [email]).fetchone()
-
-        if not row and email == "mohamedmeneaem@hillintl.com":
-            row = ("Mohamed Wagih", "Senior BIM Engineer", "Hill International (North Africa), Ltd")
-
-        if row:
-            cred = cred_s.get_user_credential(con, email)
-            has_pwd = cred is not None
-    finally:
-        con.close()
-
-    if not row:
-        return JSONResponse(status_code=403, content={
-            "success": False,
-            "message": f"Unauthorized: '{email}' is not in the Ras El Hekma Project Directory."
-        })
-
-    return JSONResponse(content={
-        "success": True,
-        "email": email,
-        "name": row[0],
-        "position": row[1],
-        "org": row[2],
-        "has_password": has_pwd
-    })
-
-
 @app.post("/api/auth/register-password")
 async def register_password_api(request: Request):
     """Enables a verified Hill engineer to create their individual personal password."""
     body = await request.json()
     email = str(body.get("email", "")).strip().lower()
-    password = str(body.get("password", "")).strip()
-    project_key = str(body.get("project_key", "")).strip()
+    password = str(body.get("password") or body.get("new_password") or "").strip()
 
     if not email.endswith("@hillintl.com"):
         return JSONResponse(status_code=403, content={"success": False, "message": "Only @hillintl.com email addresses are eligible."})
 
     if len(password) < 6:
         return JSONResponse(status_code=400, content={"success": False, "message": "Password must be at least 6 characters long."})
-
-    if project_key != PROJECT_ACCESS_KEY:
-        return JSONResponse(status_code=401, content={"success": False, "message": "Invalid Project Activation Passcode. Contact your Project Controls Lead."})
 
     # Verify user directory
     con = get_db()
@@ -4444,18 +4388,16 @@ async def register_password_api(request: Request):
         if not row:
             return JSONResponse(status_code=403, content={"success": False, "message": "User not authorized in Project Directory."})
 
-        # Save credential
         cred_s.save_user_credential(con, email, password)
         cred_s.record_user_login(con, email)
     finally:
         con.close()
 
-    # Create session token
     token = f"hill_{uuid.uuid4().hex}"
     user_info = {
         "email": email,
         "name": row[0] or email.split("@")[0].capitalize(),
-        "position": row[1] or "Project Controls Team",
+        "position": row[1] or "Hill International Team Member",
         "org": row[2] or "Hill International"
     }
     HILL_SESSIONS[token] = user_info
@@ -4472,11 +4414,10 @@ async def register_password_api(request: Request):
 
 @app.post("/api/auth/reset-password")
 async def reset_password_api(request: Request):
-    """Enables a verified Hill engineer to reset their personal password with Project Key verification."""
+    """Enables a verified Hill engineer to reset their personal password."""
     body = await request.json()
     email = str(body.get("email", "")).strip().lower()
-    new_password = str(body.get("new_password", "")).strip()
-    project_key = str(body.get("project_key", "")).strip()
+    new_password = str(body.get("new_password") or body.get("password") or "").strip()
 
     if not email.endswith("@hillintl.com"):
         return JSONResponse(status_code=403, content={"success": False, "message": "Only @hillintl.com email addresses are eligible."})
@@ -4484,16 +4425,21 @@ async def reset_password_api(request: Request):
     if len(new_password) < 6:
         return JSONResponse(status_code=400, content={"success": False, "message": "New password must be at least 6 characters long."})
 
-    if project_key != PROJECT_ACCESS_KEY:
-        return JSONResponse(status_code=401, content={"success": False, "message": "Invalid Project Activation Passcode."})
-
     con = get_db()
     try:
+        row = con.execute("""
+            SELECT user_name FROM dim_user_directory
+            WHERE LOWER(TRIM(email)) = ?
+            LIMIT 1
+        """, [email]).fetchone()
+        if not row and email != "mohamedmeneaem@hillintl.com":
+            return JSONResponse(status_code=403, content={"success": False, "message": "Email not found in Project Directory."})
+
         cred_s.save_user_credential(con, email, new_password)
     finally:
         con.close()
 
-    return JSONResponse(content={"success": True, "message": "Your personal password has been updated successfully. Please log in with your new password."})
+    return JSONResponse(content={"success": True, "message": "Your password has been updated successfully. Please log in with your new password."})
 
 
 @app.get("/api/auth/hill-session")
