@@ -2905,7 +2905,7 @@ function switchPrimaryTab(tab) {
         { id: 'controls', btnId: 'tab-btn-controls', viewId: 'view-project-controls', activeClass: 'bg-rose-600 shadow-rose-600/20', onOpen: initControlsTab },
         { id: 'hill_internal', btnId: 'tab-btn-hill-internal', viewId: 'view-hill-internal-controls', activeClass: 'bg-emerald-600 shadow-emerald-600/20', onOpen: loadHillTeamControls },
         { id: 'hill_ssc_direct', btnId: 'tab-btn-hill-ssc-direct', viewId: 'view-hill-ssc-direct', activeClass: 'bg-purple-600 shadow-purple-600/20', onOpen: () => loadHillSscDirect(1) },
-        { id: 'ball_in_court', btnId: 'tab-btn-ball-in-court', viewId: 'view-ball-in-court', activeClass: 'bg-amber-600 shadow-amber-600/20', onOpen: () => loadBallInCourtData(1) },
+        // Ball in Court removed per user instruction
         { id: 'sync', btnId: 'tab-btn-sync', viewId: 'view-sync', activeClass: 'bg-emerald-600 shadow-emerald-600/20', onOpen: loadSyncStatus },
         { id: 'discipline_safety', btnId: 'tab-btn-discipline-safety', viewId: 'view-discipline-safety', activeClass: 'bg-emerald-600 shadow-emerald-600/20', onOpen: () => loadDisciplineSafety(1) },
         { id: 'discipline_qaqc', btnId: 'tab-btn-discipline-qaqc', viewId: 'view-discipline-qaqc', activeClass: 'bg-cyan-600 shadow-cyan-600/20', onOpen: () => loadDisciplineQaqc(1) },
@@ -10359,3 +10359,44 @@ window.addEventListener('load', function() {
 document.addEventListener('visibilitychange', function() {
     if (!document.hidden) cleanAllAutofilledSearchInputs();
 });
+
+// ==========================================
+// ON-DEMAND INSTANT SYNC TRIGGERS
+// ==========================================
+window.triggerFastSyncNow = async function() {
+    try {
+        if (window.showToast) window.showToast("Fast Sync Initiated", "Micro-batch delta extraction running in background...", "info", 4000);
+        const res = await fetch('/api/extraction/run-delta', { 
+            method: 'POST', 
+            headers: { 'X-Admin-Key': window.getAdminToken() || 'admin_token' } 
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+            if (window.showToast) window.showToast("Fast Sync Active", "Delta sync completed successfully.", "success", 4000);
+            if (typeof updateDatabaseCutoffDisplay === 'function') updateDatabaseCutoffDisplay();
+        } else {
+            if (window.showToast) window.showToast("Sync Status", data.message || "Fast sync started in background.", "info", 4000);
+        }
+    } catch (e) {
+        if (window.showToast) window.showToast("Sync Error", e.message, "error", 4000);
+    }
+};
+
+window.triggerDeepSyncNow = async function() {
+    try {
+        if (window.showToast) window.showToast("Deep Sync Initiated", "Full reconciled extraction running in background (~3-5 mins)...", "warning", 6000);
+        const res = await fetch('/api/extraction/run-now', { 
+            method: 'POST', 
+            headers: { 'X-Admin-Key': window.getAdminToken() || 'admin_token' } 
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+            if (window.showToast) window.showToast("Deep Sync Active", "Deep extraction pipeline running.", "success", 5000);
+            if (typeof loadSyncStatus === 'function') loadSyncStatus();
+        } else {
+            if (window.showToast) window.showToast("Sync Notice", data.message || "Deep sync triggered.", "info", 4000);
+        }
+    } catch (e) {
+        if (window.showToast) window.showToast("Sync Error", e.message, "error", 4000);
+    }
+};

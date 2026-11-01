@@ -27,7 +27,11 @@ CLOUD_TABLES = [
     "mail_aconex_links",
     "user_custom_emails",
     "user_refresh_requests",
-    "user_credentials"
+    "user_credentials",
+    "val_aconex_overdue_workflows",
+    "val_aconex_overdue_mails",
+    "val_aconex_project_directory",
+    "map_workflow_templates"
 ]
 
 def build_cloud_database_and_zip(source_db_path=None, target_db_path=None, target_zip_path=None):

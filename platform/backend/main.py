@@ -232,16 +232,16 @@ def aconex_doc_redirect(doc_no: str = Query(""), fallback: str = Query("")):
             con = get_db()
             try:
                 # 1. Look up directly in dim_documents or doc_direct_links
-                d_row = con.execute("SELECT aconex_url, tracking_id FROM dim_documents WHERE trim(document_no) = ? OR trim(document_no) = ? LIMIT 1", [raw, f"'{raw}"]).fetchone()
+                d_row = con.execute("SELECT aconex_url, tracking_id FROM dim_documents WHERE trim(replace(document_no, '\'', '')) = ? LIMIT 1", [raw]).fetchone()
                 if not d_row:
-                    d_row = con.execute("SELECT aconex_url, tracking_id FROM doc_direct_links WHERE trim(document_no) = ? OR trim(document_no) = ? LIMIT 1", [raw, f"'{raw}"]).fetchone()
+                    d_row = con.execute("SELECT aconex_url, tracking_id FROM doc_direct_links WHERE trim(replace(document_no, '\'', '')) = ? LIMIT 1", [raw]).fetchone()
                 
-                if d_row and d_row[0] and ("mainTarget" in d_row[0] or "MiniURL" in d_row[0]):
-                    return _AconexRedirect(url=d_row[0], status_code=302)
-                elif d_row and d_row[1]:
+                if d_row and d_row[1]:
                     tid = str(d_row[1]).strip()
-                    target = f"https://mea.aconex.com/hub/index.html?mainTarget=%2FViewDoc%3Ftrackingid%3D{tid}%26projectid%3D1744833878%26cversion%3D1%26tab%3D0"
+                    target = f"https://mea.aconex.com/ViewDoc?trackingid={tid}&projectid=1744833878"
                     return _AconexRedirect(url=target, status_code=302)
+                elif d_row and d_row[0] and ("ViewDoc" in d_row[0] or "MiniURL" in d_row[0] or "mainTarget" in d_row[0]):
+                    return _AconexRedirect(url=d_row[0], status_code=302)
 
                 # 2. In case it was an RFI or Mail passed to doc endpoint
                 m_row = con.execute("SELECT aconex_url FROM fact_mail WHERE mail_no = ? AND aconex_url LIKE '%MiniURL%' LIMIT 1", [raw]).fetchone()
@@ -254,12 +254,12 @@ def aconex_doc_redirect(doc_no: str = Query(""), fallback: str = Query("")):
         except Exception as e:
             print(f"[aconex_doc_redirect] lookup error: {e}")
         
-        # Fallback to Document Register Search in Hub
+        # Direct clean Document Search (single URL encode, zero double-quote corruption)
         q = urllib.parse.quote(f'documentNumber:"{raw}"')
-        target = f"https://mea.aconex.com/hub/index.html?mainTarget=%2FDocSearch%3FsearchQuery%3D{urllib.parse.quote(q)}%26PROJECT_ID%3D1744833878"
+        target = f"https://mea.aconex.com/DocSearch?searchQuery={q}&PROJECT_ID=1744833878"
         return _AconexRedirect(url=target, status_code=302)
     
-    return _AconexRedirect(url="https://mea.aconex.com/hub/index.html", status_code=302)
+    return _AconexRedirect(url="https://mea.aconex.com/DocSearch?PROJECT_ID=1744833878", status_code=302)
 
 
 @app.get("/api/aconex/mail")
@@ -323,9 +323,9 @@ def aconex_mail_redirect(mail_no: str = Query(""), rfi_no: str = Query(""), cid:
             url = fallback
         elif raw:
             q = urllib.parse.quote(f'mailNumber:"{raw}"')
-            url = f"https://mea.aconex.com/hub/index.html?mainTarget=%2FMailSearch%3FsearchQuery%3D{urllib.parse.quote(q)}%26PROJECT_ID%3D1744833878"
+            url = f"https://mea.aconex.com/MailSearch?searchQuery={q}&PROJECT_ID=1744833878"
         else:
-            url = "https://mea.aconex.com/hub/index.html"
+            url = "https://mea.aconex.com/MailSearch?PROJECT_ID=1744833878"
     return _AconexRedirect(url=url, status_code=302)
 
 # -----------------------------------------------------------------------------
@@ -1751,9 +1751,15 @@ def get_company_weekly_dossier_api(org_name: str, package: str = None):
                 s.date_due::VARCHAR,
                 s.days_late,
                 s.assigned_to_name,
-                l.aconex_url,
+                COALESCE(
+                    CASE WHEN d.tracking_id IS NOT NULL THEN 'https://mea.aconex.com/ViewDoc?trackingid=' || d.tracking_id || '&projectid=1744833878' END,
+                    d.aconex_url,
+                    l.aconex_url,
+                    'https://mea.aconex.com/DocSearch?searchQuery=documentNumber%3A%22' || replace(s.document_no, '\'', '') || '%22&PROJECT_ID=1744833878'
+                ) as aconex_url,
                 s.workflow_name
             FROM fact_workflow_steps s
+            LEFT JOIN dim_documents d ON trim(replace(s.document_no, '\'', '')) = trim(replace(d.document_no, '\'', ''))
             LEFT JOIN doc_aconex_links l ON s.document_no = l.document_no
             WHERE s.assigned_to_organization = ? AND s.is_overdue
             ORDER BY s.days_late DESC
@@ -1824,6 +1830,9 @@ def get_company_weekly_dossier_api(org_name: str, package: str = None):
             "due_date": m[7][:10] if m[7] else None, "days_late": m[8], "aconex_url": m[9],
             "project_package": resolve_project_package(doc_no=m[0], subject=m[2])
         } for m in mails]
+        # Strip Letters from SSC weekly notifications per management request
+        if any(token in org_name.lower() for token in ['ssc', 'shaker', 'ecg']):
+            all_mails = [m for m in all_mails if 'letter' not in (m.get('type') or '').lower()]
 
         all_rfis = [{
             "mail_no": r[0], "subject": r[1], "from_org": r[2], "from_name": r[3],
