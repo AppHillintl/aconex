@@ -23,6 +23,8 @@ CLOUD_TABLES = [
     "fact_rfis",
     "fact_workflow_steps",
     "fact_workflows",
+    "doc_direct_links",
+    "mail_aconex_links",
     "user_custom_emails",
     "user_refresh_requests",
     "user_credentials"

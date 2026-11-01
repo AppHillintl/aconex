@@ -143,6 +143,10 @@ async def hill_corporate_auth_middleware(request: Request, call_next):
         "/api/auth/verify-admin",
         "/api/auth/check-admin",
         "/api/sync/cloud-push",
+        "/api/aconex/doc",
+        "/api/aconex/mail",
+        "/api/aconex/rfi",
+        "/api/aconex/workflow",
         "/openapi.json",
         "/docs",
         "/redoc"
@@ -229,22 +233,37 @@ def aconex_doc_redirect(doc_no: str = Query(""), fallback: str = Query("")):
                 base = re.sub(r'(?i)\.(attached|attach|att)\.?$', '', raw).strip()
                 if base and base != raw:
                     candidates.append(base)
+                for c in list(candidates):
+                    if c.startswith("'"):
+                        candidates.append(c.lstrip("'"))
+                    else:
+                        candidates.append(f"'{c}")
                 base_dwg = re.sub(r'(?i)[-_]dwg$', '', raw).strip()
                 if base_dwg and base_dwg not in candidates:
                     candidates.append(base_dwg)
 
-                # 1. Primary lookup in dim_documents by document_no or tracking_id to get exact direct ViewDoc link
+                # 1. Primary lookup in dim_documents or doc_direct_links by document_no or tracking_id to get exact direct ViewDoc link
                 for cand in candidates:
-                    doc_row = con.execute(
-                        "SELECT aconex_url, tracking_id FROM dim_documents WHERE document_no = ? OR tracking_id = ? LIMIT 1", [cand, cand]
-                    ).fetchone()
-                    if doc_row:
-                        if doc_row[0] and 'ViewDoc' in doc_row[0]:
-                            url = doc_row[0]
-                            break
-                        elif doc_row[1]:
-                            url = f"https://mea.aconex.com/ViewDoc?trackingid={doc_row[1]}&projectid=1744833878&cversion=1&tab=0"
-                            break
+                    for test_c in [cand, f"'{cand}", cand.lstrip("'")]:
+                        doc_row = con.execute(
+                            "SELECT aconex_url, tracking_id FROM dim_documents WHERE document_no = ? OR tracking_id = ? LIMIT 1", [test_c, test_c]
+                        ).fetchone()
+                        if not doc_row or not doc_row[0] or 'ViewDoc' not in str(doc_row[0]):
+                            try:
+                                doc_row = con.execute(
+                                    "SELECT aconex_url, tracking_id FROM doc_direct_links WHERE document_no = ? OR tracking_id = ? LIMIT 1", [test_c, test_c]
+                                ).fetchone()
+                            except Exception:
+                                pass
+                        if doc_row:
+                            if doc_row[0] and 'ViewDoc' in str(doc_row[0]):
+                                url = doc_row[0]
+                                break
+                            elif doc_row[1]:
+                                url = f"https://mea.aconex.com/ViewDoc?trackingid={doc_row[1]}&projectid=1744833878&cversion=1&tab=0"
+                                break
+                    if url:
+                        break
 
                 # 2. In case it was an RFI/mail referenced as a document
                 if not url:

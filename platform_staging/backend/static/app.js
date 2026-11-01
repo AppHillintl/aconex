@@ -1,4 +1,292 @@
 
+// =============================================================================
+// HILL INTERNATIONAL CORPORATE AUTHENTICATION & FETCH INTERCEPTOR
+// =============================================================================
+const _originalFetch = window.fetch;
+window.fetch = function(url, options = {}) {
+    options = options || {};
+    options.headers = options.headers || {};
+    const token = localStorage.getItem('hill_auth_token');
+    if (token) {
+        if (options.headers instanceof Headers) {
+            options.headers.set('x-hill-token', token);
+            options.headers.set('Authorization', 'Bearer ' + token);
+        } else if (Array.isArray(options.headers)) {
+            options.headers.push(['x-hill-token', token]);
+            options.headers.push(['Authorization', 'Bearer ' + token]);
+        } else {
+            options.headers['x-hill-token'] = token;
+            options.headers['Authorization'] = 'Bearer ' + token;
+        }
+    }
+    return _originalFetch(url, options).then(res => {
+        if (res.status === 401 && typeof url === 'string' && url.startsWith('/api/') && !url.includes('/api/auth/')) {
+            showHillLoginGate();
+        }
+        return res;
+    });
+};
+
+async function checkHillAuthSession() {
+    const token = localStorage.getItem('hill_auth_token');
+    if (!token) {
+        showHillLoginGate();
+        return false;
+    }
+    try {
+        const res = await _originalFetch('/api/auth/hill-session', {
+            headers: { 'x-hill-token': token, 'Authorization': 'Bearer ' + token }
+        });
+        const data = await res.json();
+        if (data.authenticated && data.user) {
+            renderHillUserBadge(data.user);
+            hideHillLoginGate();
+            return true;
+        } else {
+            localStorage.removeItem('hill_auth_token');
+            showHillLoginGate();
+            return false;
+        }
+    } catch (e) {
+        showHillLoginGate();
+        return false;
+    }
+}
+
+function showHillLoginGate() {
+    const gate = document.getElementById('hill-login-gate');
+    if (gate) {
+        gate.classList.remove('hidden');
+        gate.style.display = 'flex';
+    }
+    const badge = document.getElementById('hill-auth-user-badge');
+    if (badge) badge.classList.add('hidden');
+    const emailInput = document.getElementById('hill-email-input');
+    const passInput = document.getElementById('hill-passcode-input');
+    if (emailInput) emailInput.disabled = false;
+    if (passInput) passInput.disabled = false;
+}
+
+function hideHillLoginGate() {
+    const gate = document.getElementById('hill-login-gate');
+    if (gate) {
+        gate.classList.add('hidden');
+        gate.style.display = 'none';
+    }
+    const emailInput = document.getElementById('hill-email-input');
+    const passInput = document.getElementById('hill-passcode-input');
+    if (emailInput) {
+        emailInput.value = '';
+        emailInput.disabled = true;
+    }
+    if (passInput) {
+        passInput.value = '';
+        passInput.disabled = true;
+    }
+    cleanAllAutofilledSearchInputs();
+}
+
+function isAutofilledCredential(val, inputId = '') {
+    if (!val || typeof val !== 'string') return false;
+    const v = val.trim().toLowerCase();
+    const userEmail = (localStorage.getItem('hill_auth_email') || '').toLowerCase().trim();
+    if (userEmail && v === userEmail) return true;
+    if (/@hillintl\.com$/i.test(v) && !inputId.includes('engineer') && !inputId.includes('user')) return true;
+    return false;
+}
+
+function getCleanSearchQuery(inputId) {
+    const el = document.getElementById(inputId);
+    if (!el) return '';
+    const raw = el.value || '';
+    if (isAutofilledCredential(raw, inputId)) {
+        console.warn(`[Autofill Guard] Wiping browser credential autofill from #${inputId}:`, raw);
+        el.value = '';
+        return '';
+    }
+    return raw.trim();
+}
+
+function cleanAllAutofilledSearchInputs() {
+    const userEmail = (localStorage.getItem('hill_auth_email') || '').toLowerCase().trim();
+    const searchInputs = document.querySelectorAll('input[type="text"], input[type="search"]');
+    searchInputs.forEach(inp => {
+        if (!inp.id || inp.id === 'hill-email-input') return;
+        const v = (inp.value || '').trim().toLowerCase();
+        if ((userEmail && v === userEmail) || (/@hillintl\.com$/i.test(v) && !inp.id.includes('engineer') && !inp.id.includes('user'))) {
+            inp.value = '';
+        }
+    });
+}
+window.cleanAllAutofilledSearchInputs = cleanAllAutofilledSearchInputs;
+window.getCleanSearchQuery = getCleanSearchQuery;
+
+function renderHillUserBadge(user) {
+    const badge = document.getElementById('hill-auth-user-badge');
+    const initialEl = document.getElementById('hill-badge-initial');
+    const nameEl = document.getElementById('hill-badge-name');
+    const posEl = document.getElementById('hill-badge-position');
+    if (badge && user) {
+        if (initialEl) initialEl.innerText = (user.name || 'H').charAt(0).toUpperCase();
+        if (nameEl) nameEl.innerText = user.name || 'Hill Engineer';
+        if (posEl) posEl.innerText = user.position || 'Project Controls';
+        badge.classList.remove('hidden');
+    }
+}
+
+let currentAuthMode = 'login'; // 'login', 'reset'
+
+function toggleAuthMode(mode) {
+    currentAuthMode = mode;
+    const pwdGroup = document.getElementById('hill-password-group');
+    const setupFields = document.getElementById('hill-setup-fields');
+    const titleEl = document.getElementById('hill-gate-title');
+    const subTitleEl = document.getElementById('hill-gate-subtitle');
+    const btn = document.getElementById('hill-login-btn');
+    const toggleBtn = document.getElementById('hill-toggle-mode-btn');
+    const errBox = document.getElementById('hill-login-error');
+    const succBox = document.getElementById('hill-login-success');
+
+    if (errBox) { errBox.classList.add('hidden'); errBox.innerText = ''; }
+    if (succBox) { succBox.classList.add('hidden'); succBox.innerText = ''; }
+
+    if (mode === 'reset') {
+        if (pwdGroup) pwdGroup.classList.add('hidden');
+        if (setupFields) setupFields.classList.remove('hidden');
+        if (titleEl) titleEl.innerText = 'Reset Password';
+        if (subTitleEl) subTitleEl.innerText = 'Enter your corporate email and choose a new password.';
+        if (btn) btn.innerHTML = '<span>🔄</span> Update Password';
+        if (toggleBtn) {
+            toggleBtn.classList.remove('hidden');
+            toggleBtn.innerText = '← Back to Sign In';
+            toggleBtn.onclick = () => toggleAuthMode('login');
+        }
+    } else {
+        // Login mode
+        if (pwdGroup) pwdGroup.classList.remove('hidden');
+        if (setupFields) setupFields.classList.add('hidden');
+        if (titleEl) titleEl.innerText = 'Hill International Portal';
+        if (subTitleEl) subTitleEl.innerText = 'Access is restricted strictly to verified Hill International Inc. personnel.';
+        if (btn) btn.innerHTML = '<span>🔐</span> Sign In to Dashboard';
+        if (toggleBtn) {
+            toggleBtn.classList.add('hidden');
+        }
+    }
+}
+
+async function handleHillAuthSubmit(event) {
+    if (event) event.preventDefault();
+    const email = document.getElementById('hill-email-input').value.trim();
+    const password = document.getElementById('hill-passcode-input') ? document.getElementById('hill-passcode-input').value.trim() : '';
+    const newPwd = document.getElementById('hill-new-password-input') ? document.getElementById('hill-new-password-input').value.trim() : '';
+    const confirmPwd = document.getElementById('hill-confirm-password-input') ? document.getElementById('hill-confirm-password-input').value.trim() : '';
+    
+    const errBox = document.getElementById('hill-login-error');
+    const succBox = document.getElementById('hill-login-success');
+    const btn = document.getElementById('hill-login-btn');
+
+    if (errBox) { errBox.classList.add('hidden'); errBox.innerText = ''; }
+    if (succBox) { succBox.classList.add('hidden'); succBox.innerText = ''; }
+
+    // Client-side validation
+    if (!email.toLowerCase().endsWith('@hillintl.com')) {
+        if (errBox) {
+            errBox.innerText = "Access Denied: Only corporate email addresses ending with '@hillintl.com' are permitted.";
+            errBox.classList.remove('hidden');
+        }
+        return;
+    }
+
+    if (btn) btn.disabled = true;
+
+    try {
+        if (currentAuthMode === 'reset') {
+            if (newPwd.length < 6) {
+                throw new Error("New password must be at least 6 characters long.");
+            }
+            if (newPwd !== confirmPwd) {
+                throw new Error("Passwords do not match.");
+            }
+            if (btn) btn.innerText = 'Updating password...';
+
+            const res = await _originalFetch('/api/auth/reset-password', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email, new_password: newPwd })
+            });
+            const data = await res.json();
+            if (res.ok && data.success) {
+                toggleAuthMode('login');
+                if (succBox) {
+                    succBox.innerText = "Password updated successfully! Please sign in with your new password.";
+                    succBox.classList.remove('hidden');
+                }
+            } else {
+                throw new Error(data.message || "Failed to reset password.");
+            }
+
+        } else {
+            // Normal Login Mode (Email + Password only)
+            if (!password) {
+                throw new Error("Please enter your password.");
+            }
+            if (btn) btn.innerText = 'Verifying credentials...';
+
+            const res = await _originalFetch('/api/auth/hill-login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email, password })
+            });
+            const data = await res.json();
+
+            if (res.ok && data.success && data.token) {
+                localStorage.setItem('hill_auth_token', data.token);
+                renderHillUserBadge(data.user);
+                hideHillLoginGate();
+                if (typeof loadAllProjects === 'function') loadAllProjects();
+                if (typeof fetchFeedSummary === 'function') fetchFeedSummary();
+                if (typeof fetchOverviewKPIs === 'function') fetchOverviewKPIs();
+            } else {
+                throw new Error(data.message || "Authentication failed. Please verify credentials.");
+            }
+        }
+    } catch (e) {
+        if (errBox) {
+            errBox.innerText = e.message || "Authentication service unavailable.";
+            errBox.classList.remove('hidden');
+        }
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = currentAuthMode === 'reset' ? '<span>🔄</span> Update Password' : '<span>🔐</span> Sign In to Dashboard';
+        }
+    }
+}
+
+function handleHillLogin(event) { handleHillAuthSubmit(event); }
+
+async function hillLogout() {
+    const token = localStorage.getItem('hill_auth_token');
+    try {
+        await _originalFetch('/api/auth/hill-logout', {
+            method: 'POST',
+            headers: { 'x-hill-token': token }
+        });
+    } catch (e) {}
+    localStorage.removeItem('hill_auth_token');
+    showHillLoginGate();
+    window.location.reload();
+}
+
+// Auto-run auth verification immediately
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', checkHillAuthSession);
+} else {
+    checkHillAuthSession();
+}
+
+
+
 function onLettersPeriodPresetChange(preset) {
     const fIn = document.getElementById('sub-letters-from-date');
     const tIn = document.getElementById('sub-letters-to-date');
@@ -951,6 +1239,11 @@ function setProjectsViewMode(mode) {
 window.setProjectsViewMode = setProjectsViewMode;
 
 function onProjectsSearchInput(val) {
+    const inputEl = document.getElementById('projects-search-input');
+    if (isAutofilledCredential(val, 'projects-search-input')) {
+        if (inputEl) inputEl.value = '';
+        val = '';
+    }
     const clearBtn = document.getElementById('projects-search-clear');
     if (clearBtn) {
         if (val && val.trim().length > 0) {
@@ -2618,6 +2911,7 @@ function exportFilteredData(category) {
 // 7. PRIMARY TABS & CONTROLS DISPATCH
 // ==========================================
 function switchPrimaryTab(tab) {
+    cleanAllAutofilledSearchInputs();
     if (tab === 'settings' || tab === 'sync') {
         if (typeof window.isAdminUnlocked === 'function' && !window.isAdminUnlocked()) {
             if (typeof window.promptAdminUnlock === 'function') {
@@ -7682,7 +7976,7 @@ function loadDisciplineSafety(page = 1) {
     const category = document.getElementById('safety-filter-category')?.value || 'all';
     const type = document.getElementById('safety-filter-type')?.value || 'all';
     const status = document.getElementById('safety-filter-status')?.value || 'all';
-    const search = document.getElementById('safety-search-input')?.value || '';
+    const search = getCleanSearchQuery('safety-search-input');
 
     const params = new URLSearchParams({ page: safetyCurrentPage, limit: 30 });
     if (pkg !== 'all') params.append('project', pkg);
@@ -7964,7 +8258,7 @@ async function loadDisciplineQaqc(page = 1) {
     const pkg = document.getElementById('qaqc-filter-project')?.value || 'all';
     const type = document.getElementById('qaqc-filter-type')?.value || 'all';
     const status = document.getElementById('qaqc-filter-status')?.value || 'all';
-    const search = document.getElementById('qaqc-search-input')?.value || '';
+    const search = getCleanSearchQuery('qaqc-search-input');
 
     const params = new URLSearchParams({ page: qaqcCurrentPage, limit: 30 });
     if (pkg !== 'all') params.append('project', pkg);
@@ -8191,7 +8485,7 @@ async function loadDisciplineSite(page = 1) {
     const pkg = document.getElementById('site-filter-project')?.value || 'all';
     const type = document.getElementById('site-filter-type')?.value || 'all';
     const overdue = document.getElementById('site-filter-overdue')?.checked || false;
-    const search = document.getElementById('site-search-input')?.value || '';
+    const search = getCleanSearchQuery('site-search-input');
 
     const params = new URLSearchParams({ page: siteCurrentPage, limit: 30 });
     if (pkg !== 'all') params.append('project', pkg);
@@ -8415,7 +8709,7 @@ async function loadDisciplineTech(page = 1) {
     const pkg = document.getElementById('tech-filter-project')?.value || 'all';
     const disc = document.getElementById('tech-filter-discipline')?.value || 'all';
     const type = document.getElementById('tech-filter-type')?.value || 'all';
-    const search = document.getElementById('tech-search-input')?.value || '';
+    const search = getCleanSearchQuery('tech-search-input');
 
     const params = new URLSearchParams({ page: techCurrentPage, limit: 30 });
     if (pkg !== 'all') params.append('project', pkg);
@@ -8661,7 +8955,7 @@ function loadDisciplineContractual(page = 1) {
     const category = document.getElementById('contractual-filter-category')?.value || 'all';
     const type = document.getElementById('contractual-filter-type')?.value || 'all';
     const status = document.getElementById('contractual-filter-status')?.value || 'all';
-    const search = document.getElementById('contractual-search-input')?.value || '';
+    const search = getCleanSearchQuery('contractual-search-input');
 
     const params = new URLSearchParams({ page: contractualCurrentPage, limit: 30 });
     if (pkg !== 'all') params.append('project', pkg);
@@ -8923,7 +9217,7 @@ function loadDisciplineCommercial(page = 1) {
     const category = document.getElementById('commercial-filter-category')?.value || 'all';
     const type = document.getElementById('commercial-filter-type')?.value || 'all';
     const status = document.getElementById('commercial-filter-status')?.value || 'all';
-    const search = document.getElementById('commercial-search-input')?.value || '';
+    const search = getCleanSearchQuery('commercial-search-input');
 
     const params = new URLSearchParams({ page: commercialCurrentPage, limit: 30 });
     if (pkg !== 'all') params.append('project', pkg);
@@ -9591,8 +9885,7 @@ window.filterFeedByProject = filterFeedByProject;
 function debounceFeedSearch() {
     clearTimeout(feedSearchTimeout);
     feedSearchTimeout = setTimeout(() => {
-        const inp = document.getElementById('feed-search-input');
-        feedCurrentSearch = inp ? inp.value : '';
+        feedCurrentSearch = getCleanSearchQuery('feed-search-input');
         loadDailyFeed(1);
     }, 300);
 }
@@ -10089,3 +10382,13 @@ async function submitRefreshRequest(e) {
     }
 }
 window.submitRefreshRequest = submitRefreshRequest;
+
+// Automatic browser credential autofill cleaner for dashboard search inputs
+window.addEventListener('load', function() {
+    setTimeout(cleanAllAutofilledSearchInputs, 100);
+    setTimeout(cleanAllAutofilledSearchInputs, 500);
+    setTimeout(cleanAllAutofilledSearchInputs, 1500);
+});
+document.addEventListener('visibilitychange', function() {
+    if (!document.hidden) cleanAllAutofilledSearchInputs();
+});

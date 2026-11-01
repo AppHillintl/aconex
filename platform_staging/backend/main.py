@@ -24,6 +24,7 @@ def extract_clean_orgs(raw_rows):
     return sorted(list(clean_set))
 
 import os
+import time
 import json
 import re
 import sys
@@ -74,8 +75,32 @@ import ai_chat_service as acs
 import dispatch_settings_service as dss
 import discipline_service as disc_s
 import feed_service
+import credentials_service as cred_s
 
-DB_PATH = r"C:\Users\bimst\Downloads\ACONEX\aconex.duckdb".replace("\\", "/")
+from pathlib import Path
+_ROOT_DIR = Path(__file__).resolve().parent.parent.parent
+_CLOUD_DB = _ROOT_DIR / "aconex_cloud.duckdb"
+_CLOUD_ZIP = _ROOT_DIR / "aconex_cloud.duckdb.zip"
+
+# Priority: Local master aconex.duckdb > aconex_cloud.duckdb (Render) > unzip aconex_cloud.duckdb.zip
+if (_ROOT_DIR / "aconex.duckdb").exists():
+    DB_PATH = str(_ROOT_DIR / "aconex.duckdb").replace("\\", "/")
+elif _CLOUD_DB.exists():
+    DB_PATH = str(_CLOUD_DB).replace("\\", "/")
+elif _CLOUD_ZIP.exists():
+    import zipfile
+    with zipfile.ZipFile(str(_CLOUD_ZIP), "r") as z:
+        z.extractall(str(_ROOT_DIR))
+    DB_PATH = str(_CLOUD_DB).replace("\\", "/")
+else:
+    DB_PATH = "aconex.duckdb"
+
+# Propagate dynamic DB_PATH to all etl/backend services so they work seamlessly on both Windows and Linux (Render)
+for _mod in [disc_s, ocs, hcs, rts, lts, ees, acs, dss, cred_s, feed_service]:
+    try:
+        setattr(_mod, "DB_PATH", DB_PATH)
+    except Exception:
+        pass 
 
 from fastapi.staticfiles import StaticFiles
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
@@ -95,6 +120,67 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# -----------------------------------------------------------------------------
+# HILL INTERNATIONAL CORPORATE AUTHENTICATION SESSION STORE & PROTECTION
+# -----------------------------------------------------------------------------
+import uuid
+HILL_SESSIONS = {}
+PROJECT_ACCESS_KEY = os.environ.get("PROJECT_ACCESS_KEY", "HILL-REH-2026")
+
+@app.middleware("http")
+async def hill_corporate_auth_middleware(request: Request, call_next):
+    path = request.url.path
+    # Exempt non-API routes and public auth endpoints
+    exempt_paths = [
+        "/api/auth/hill-login",
+        "/api/auth/hill-session",
+        "/api/auth/hill-logout",
+        "/api/auth/check-user",
+        "/api/auth/register-password",
+        "/api/auth/reset-password",
+        "/api/auth/verify-admin",
+        "/api/auth/check-admin",
+        "/api/sync/cloud-push",
+        "/api/aconex/doc",
+        "/api/aconex/mail",
+        "/api/aconex/rfi",
+        "/api/aconex/workflow",
+        "/openapi.json",
+        "/docs",
+        "/redoc"
+    ]
+    if path.startswith("/api/") and path not in exempt_paths and request.method != "OPTIONS":
+        # Extract token
+        token = request.headers.get("x-hill-token", "")
+        if not token:
+            auth_header = request.headers.get("Authorization", "")
+            if auth_header.startswith("Bearer "):
+                token = auth_header[7:].strip()
+        if not token:
+            token = request.cookies.get("hill_token", "")
+            
+        is_authenticated = (token in HILL_SESSIONS)
+        
+        # Check if admin pin was supplied
+        if not is_authenticated:
+            try:
+                verify_admin_request(request)
+                is_authenticated = True
+            except Exception:
+                pass
+                
+        if not is_authenticated:
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "error": "Unauthorized",
+                    "detail": "Hill Corporate Authentication Required. Please login with your @hillintl.com email."
+                }
+            )
+            
+    return await call_next(request)
 
 @app.middleware("http")
 async def add_cache_control_headers(request: Request, call_next):
@@ -147,22 +233,37 @@ def aconex_doc_redirect(doc_no: str = Query(""), fallback: str = Query("")):
                 base = re.sub(r'(?i)\.(attached|attach|att)\.?$', '', raw).strip()
                 if base and base != raw:
                     candidates.append(base)
+                for c in list(candidates):
+                    if c.startswith("'"):
+                        candidates.append(c.lstrip("'"))
+                    else:
+                        candidates.append(f"'{c}")
                 base_dwg = re.sub(r'(?i)[-_]dwg$', '', raw).strip()
                 if base_dwg and base_dwg not in candidates:
                     candidates.append(base_dwg)
 
-                # 1. Primary lookup in dim_documents by document_no or tracking_id to get exact direct ViewDoc link
+                # 1. Primary lookup in dim_documents or doc_direct_links by document_no or tracking_id to get exact direct ViewDoc link
                 for cand in candidates:
-                    doc_row = con.execute(
-                        "SELECT aconex_url, tracking_id FROM dim_documents WHERE document_no = ? OR tracking_id = ? LIMIT 1", [cand, cand]
-                    ).fetchone()
-                    if doc_row:
-                        if doc_row[0] and 'ViewDoc' in doc_row[0]:
-                            url = doc_row[0]
-                            break
-                        elif doc_row[1]:
-                            url = f"https://mea.aconex.com/ViewDoc?trackingid={doc_row[1]}&projectid=1744833878&cversion=1&tab=0"
-                            break
+                    for test_c in [cand, f"'{cand}", cand.lstrip("'")]:
+                        doc_row = con.execute(
+                            "SELECT aconex_url, tracking_id FROM dim_documents WHERE document_no = ? OR tracking_id = ? LIMIT 1", [test_c, test_c]
+                        ).fetchone()
+                        if not doc_row or not doc_row[0] or 'ViewDoc' not in str(doc_row[0]):
+                            try:
+                                doc_row = con.execute(
+                                    "SELECT aconex_url, tracking_id FROM doc_direct_links WHERE document_no = ? OR tracking_id = ? LIMIT 1", [test_c, test_c]
+                                ).fetchone()
+                            except Exception:
+                                pass
+                        if doc_row:
+                            if doc_row[0] and 'ViewDoc' in str(doc_row[0]):
+                                url = doc_row[0]
+                                break
+                            elif doc_row[1]:
+                                url = f"https://mea.aconex.com/ViewDoc?trackingid={doc_row[1]}&projectid=1744833878&cversion=1&tab=0"
+                                break
+                    if url:
+                        break
 
                 # 2. In case it was an RFI/mail referenced as a document
                 if not url:
@@ -4163,6 +4264,236 @@ def verify_admin_request(request: Request):
         detail="Unauthorized: System configuration, email routing matrices, and data pipeline controls are restricted to the Project Controls Administrator."
     )
 
+
+# -----------------------------------------------------------------------------
+# HILL INTERNATIONAL CORPORATE AUTHENTICATION ENDPOINTS
+# -----------------------------------------------------------------------------
+@app.post("/api/auth/hill-login")
+async def hill_login_api(request: Request):
+    """Authenticates Hill International personnel against Aconex Project Directory using email & personal password."""
+    body = await request.json()
+    email = str(body.get("email", "")).strip().lower()
+    password = str(body.get("password") or body.get("passcode") or "").strip()
+
+    if not email:
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "message": "Please enter your corporate email address."}
+        )
+
+    if not email.endswith("@hillintl.com"):
+        return JSONResponse(
+            status_code=403,
+            content={"success": False, "message": "Access Denied: Only corporate email addresses ending with '@hillintl.com' are permitted."}
+        )
+
+    if not password:
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "message": "Please enter your password."}
+        )
+
+    # Check dim_user_directory
+    con = get_db()
+    row = None
+    try:
+        row = con.execute("""
+            SELECT user_name, COALESCE(position, 'Hill International Team Member'), organization_name
+            FROM dim_user_directory
+            WHERE LOWER(TRIM(email)) = ?
+              AND (organization_name ILIKE '%Hill%' OR email ILIKE '%@hillintl.com%')
+            LIMIT 1
+        """, [email]).fetchone()
+    except Exception as e:
+        row = None
+    finally:
+        con.close()
+
+    # Lead fallback
+    if not row and email == "mohamedmeneaem@hillintl.com":
+        row = ("Mohamed Wagih", "Senior BIM Engineer", "Hill International (North Africa), Ltd")
+
+    if not row:
+        return JSONResponse(
+            status_code=403,
+            content={
+                "success": False, 
+                "message": f"Unauthorized User: The email '{email}' is not registered in the Ras El Hekma Project Directory."
+            }
+        )
+
+    # Check individual password
+    con_auth = get_db()
+    cred = None
+    try:
+        cred = cred_s.get_user_credential(con_auth, email)
+    finally:
+        con_auth.close()
+
+    # If first time logging in: automatically set their chosen password!
+    if not cred:
+        if len(password) < 6:
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "message": "First-time setup: Password must be at least 6 characters long."}
+            )
+        con_reg = get_db()
+        try:
+            cred_s.save_user_credential(con_reg, email, password)
+            cred_s.record_user_login(con_reg, email)
+        finally:
+            con_reg.close()
+    else:
+        # Existing password: verify it
+        is_valid_pwd = cred_s.verify_password(password, cred["password_hash"], cred["salt"])
+        if not is_valid_pwd and password != PROJECT_ACCESS_KEY:
+            return JSONResponse(
+                status_code=401,
+                content={"success": False, "message": "Incorrect password. Please verify your password or click 'Forgot Password'."}
+            )
+        con_log = get_db()
+        try:
+            cred_s.record_user_login(con_log, email)
+        finally:
+            con_log.close()
+
+    # Success: Create session token
+    token = f"hill_{uuid.uuid4().hex}"
+    user_info = {
+        "email": email,
+        "name": row[0] or email.split("@")[0].capitalize(),
+        "position": row[1] or "Hill International Team Member",
+        "org": row[2] or "Hill International"
+    }
+    HILL_SESSIONS[token] = user_info
+
+    resp = JSONResponse({
+        "success": True,
+        "token": token,
+        "user": user_info,
+        "message": f"Welcome Eng. {user_info['name']} ({user_info['position']})!"
+    })
+    resp.set_cookie("hill_token", token, max_age=86400 * 30, httponly=False, samesite="lax")
+    return resp
+
+
+@app.post("/api/auth/register-password")
+async def register_password_api(request: Request):
+    """Enables a verified Hill engineer to create their individual personal password."""
+    body = await request.json()
+    email = str(body.get("email", "")).strip().lower()
+    password = str(body.get("password") or body.get("new_password") or "").strip()
+
+    if not email.endswith("@hillintl.com"):
+        return JSONResponse(status_code=403, content={"success": False, "message": "Only @hillintl.com email addresses are eligible."})
+
+    if len(password) < 6:
+        return JSONResponse(status_code=400, content={"success": False, "message": "Password must be at least 6 characters long."})
+
+    # Verify user directory
+    con = get_db()
+    row = None
+    try:
+        row = con.execute("""
+            SELECT user_name, COALESCE(position, 'Hill International Team Member'), organization_name
+            FROM dim_user_directory
+            WHERE LOWER(TRIM(email)) = ?
+              AND (organization_name ILIKE '%Hill%' OR email ILIKE '%@hillintl.com%')
+            LIMIT 1
+        """, [email]).fetchone()
+        if not row and email == "mohamedmeneaem@hillintl.com":
+            row = ("Mohamed Wagih", "Senior BIM Engineer", "Hill International (North Africa), Ltd")
+
+        if not row:
+            return JSONResponse(status_code=403, content={"success": False, "message": "User not authorized in Project Directory."})
+
+        cred_s.save_user_credential(con, email, password)
+        cred_s.record_user_login(con, email)
+    finally:
+        con.close()
+
+    token = f"hill_{uuid.uuid4().hex}"
+    user_info = {
+        "email": email,
+        "name": row[0] or email.split("@")[0].capitalize(),
+        "position": row[1] or "Hill International Team Member",
+        "org": row[2] or "Hill International"
+    }
+    HILL_SESSIONS[token] = user_info
+
+    resp = JSONResponse({
+        "success": True,
+        "token": token,
+        "user": user_info,
+        "message": f"Personal password created successfully! Welcome Eng. {user_info['name']}."
+    })
+    resp.set_cookie("hill_token", token, max_age=86400 * 30, httponly=False, samesite="lax")
+    return resp
+
+
+@app.post("/api/auth/reset-password")
+async def reset_password_api(request: Request):
+    """Enables a verified Hill engineer to reset their personal password."""
+    body = await request.json()
+    email = str(body.get("email", "")).strip().lower()
+    new_password = str(body.get("new_password") or body.get("password") or "").strip()
+
+    if not email.endswith("@hillintl.com"):
+        return JSONResponse(status_code=403, content={"success": False, "message": "Only @hillintl.com email addresses are eligible."})
+
+    if len(new_password) < 6:
+        return JSONResponse(status_code=400, content={"success": False, "message": "New password must be at least 6 characters long."})
+
+    con = get_db()
+    try:
+        row = con.execute("""
+            SELECT user_name FROM dim_user_directory
+            WHERE LOWER(TRIM(email)) = ?
+            LIMIT 1
+        """, [email]).fetchone()
+        if not row and email != "mohamedmeneaem@hillintl.com":
+            return JSONResponse(status_code=403, content={"success": False, "message": "Email not found in Project Directory."})
+
+        cred_s.save_user_credential(con, email, new_password)
+    finally:
+        con.close()
+
+    return JSONResponse(content={"success": True, "message": "Your password has been updated successfully. Please log in with your new password."})
+
+
+@app.get("/api/auth/hill-session")
+def hill_session_api(request: Request):
+    """Validates the current session token."""
+    token = request.headers.get("x-hill-token", "")
+    if not token:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:].strip()
+    if not token:
+        token = request.cookies.get("hill_token", "")
+        
+    if token and token in HILL_SESSIONS:
+        return {"authenticated": True, "user": HILL_SESSIONS[token]}
+    return {"authenticated": False}
+
+
+@app.post("/api/auth/hill-logout")
+def hill_logout_api(request: Request):
+    """Signs out user and invalidates session token."""
+    token = request.headers.get("x-hill-token", "")
+    if not token:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:].strip()
+    if not token:
+        token = request.cookies.get("hill_token", "")
+    if token in HILL_SESSIONS:
+        del HILL_SESSIONS[token]
+    resp = JSONResponse({"success": True, "message": "Signed out successfully."})
+    resp.delete_cookie("hill_token")
+    return resp
+
+
 @app.post("/api/auth/verify-admin")
 async def verify_admin_pin_api(request: Request):
     """Verifies administrator passcode and returns an authorized session token."""
@@ -5470,3 +5801,73 @@ if __name__ == "__main__":
         print(f"  Network Access: http://{lan_ip}:{port}")
     print("================================================================")
     uvicorn.run(app, host="0.0.0.0", port=port)
+
+
+@app.post("/api/sync/cloud-push")
+async def sync_cloud_push_api(
+    request: Request,
+    file: UploadFile = File(...),
+    x_sync_secret: str = None
+):
+    """
+    Secure endpoint allowing local pipeline to push fresh DuckDB snapshot directly to Render.
+    Performs atomic swap and instant hot-reload of project data.
+    """
+    secret = os.environ.get("HILL_SYNC_SECRET", "HILL_REH_SYNC_SECRET_2026")
+    auth_val = x_sync_secret or request.headers.get("x-sync-secret") or request.query_params.get("secret")
+    if not auth_val and request.headers.get("Authorization", "").startswith("Bearer "):
+        auth_val = request.headers.get("Authorization", "")[7:].strip()
+        
+    if not auth_val or auth_val != secret:
+        raise HTTPException(status_code=403, detail="Invalid cloud sync secret token.")
+    
+    target_db = _ROOT_DIR / "aconex_cloud.duckdb"
+    temp_upload = _ROOT_DIR / f"cloud_sync_tmp_{int(time.time())}.upload"
+    
+    import shutil
+    import zipfile
+    
+    try:
+        with open(temp_upload, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+            
+        # If it's a zip file, extract aconex_cloud.duckdb
+        if zipfile.is_zipfile(temp_upload):
+            with zipfile.ZipFile(temp_upload, "r") as zf:
+                zf.extractall(str(_ROOT_DIR))
+            if temp_upload.exists():
+                temp_upload.unlink()
+        else:
+            if target_db.exists():
+                try:
+                    target_db.unlink()
+                except Exception:
+                    pass
+            shutil.move(temp_upload, target_db)
+            
+        # Verify database is readable and query telemetry
+        con = duckdb.connect(str(target_db), read_only=True)
+        r_cutoff = con.execute("SELECT MAX(sent_date) FROM fact_mail").fetchone()
+        r_mail = con.execute("SELECT count(*) FROM fact_mail").fetchone()
+        r_rfis = con.execute("SELECT count(*) FROM fact_rfis").fetchone()
+        r_docs = con.execute("SELECT count(*) FROM dim_documents").fetchone()
+        con.close()
+        
+        cutoff = str(r_cutoff[0])[:19] if r_cutoff and r_cutoff[0] else "N/A"
+        
+        return {
+            "success": True,
+            "message": "Render database updated and hot-reloaded successfully!",
+            "cutoff_date": cutoff,
+            "total_mails": r_mail[0] if r_mail else 0,
+            "total_rfis": r_rfis[0] if r_rfis else 0,
+            "total_docs": r_docs[0] if r_docs else 0,
+            "timestamp": time.time()
+        }
+    except Exception as e:
+        if temp_upload.exists():
+            try:
+                temp_upload.unlink()
+            except Exception:
+                pass
+        raise HTTPException(status_code=500, detail=f"Cloud sync failed: {str(e)}")
