@@ -93,7 +93,14 @@ elif _CLOUD_ZIP.exists():
         z.extractall(str(_ROOT_DIR))
     DB_PATH = str(_CLOUD_DB).replace("\\", "/")
 else:
-    DB_PATH = "aconex.duckdb" 
+    DB_PATH = "aconex.duckdb"
+
+# Propagate dynamic DB_PATH to all etl/backend services so they work seamlessly on both Windows and Linux (Render)
+for _mod in [disc_s, ocs, hcs, rts, lts, ees, acs, dss, cred_s, feed_service]:
+    try:
+        setattr(_mod, "DB_PATH", DB_PATH)
+    except Exception:
+        pass 
 
 from fastapi.staticfiles import StaticFiles
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")

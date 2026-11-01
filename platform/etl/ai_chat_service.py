@@ -20,7 +20,17 @@ except Exception:
     HAS_GENAI = False
 
 
-DB_PATH = r"C:\Users\bimst\Downloads\ACONEX\aconex.duckdb".replace("\\", "/")
+from pathlib import Path as _Path
+_SRV_ROOT = _Path(__file__).resolve().parent.parent.parent
+_SRV_CLOUD_DB = _SRV_ROOT / "aconex_cloud.duckdb"
+_SRV_LOCAL_DB = _SRV_ROOT / "aconex.duckdb"
+
+if _SRV_LOCAL_DB.exists():
+    DB_PATH = str(_SRV_LOCAL_DB).replace("\\", "/")
+elif _SRV_CLOUD_DB.exists():
+    DB_PATH = str(_SRV_CLOUD_DB).replace("\\", "/")
+else:
+    DB_PATH = str(_SRV_LOCAL_DB).replace("\\", "/")
 
 def get_db_connection():
     return duckdb.connect(DB_PATH, read_only=True)
