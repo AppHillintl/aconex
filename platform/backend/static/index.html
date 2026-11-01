@@ -9453,23 +9453,23 @@
                 </div>
                 <div class="flex items-center justify-center gap-3 mb-3">
                     <span class="text-xs font-extrabold tracking-widest text-amber-400 bg-amber-950/40 px-2.5 py-1 rounded-lg border border-amber-800/40">MODON</span>
-                    <span class="text-slate-500">•</span>
+                    <span class="text-slate-500">|</span>
                     <span class="text-xs font-extrabold tracking-widest text-red-400 bg-red-950/40 px-2.5 py-1 rounded-lg border border-red-800/40">HILL PMC</span>
                 </div>
-                <h2 class="text-xl sm:text-2xl font-black text-white tracking-tight font-heading">
-                    Hill International Corporate Portal
+                <h2 id="hill-gate-title" class="text-xl sm:text-2xl font-black text-white tracking-tight font-heading">
+                    Hill International Portal
                 </h2>
-                <p class="text-xs text-slate-400 mt-2 leading-relaxed">
-                    This dashboard contains confidential contractual records and project controls analytics.<br>
+                <p id="hill-gate-subtitle" class="text-xs text-slate-400 mt-2 leading-relaxed">
                     Access is restricted strictly to verified <strong>Hill International Inc.</strong> personnel.
                 </p>
             </div>
 
-            <!-- Error Alert Container -->
+            <!-- Error / Success Alert Containers -->
             <div id="hill-login-error" class="hidden mb-4 p-3 rounded-xl bg-red-950/70 border border-red-800/80 text-red-200 text-xs leading-relaxed"></div>
+            <div id="hill-login-success" class="hidden mb-4 p-3 rounded-xl bg-emerald-950/70 border border-emerald-800/80 text-emerald-200 text-xs leading-relaxed"></div>
 
-            <!-- Login Form -->
-            <form id="hill-login-form" onsubmit="handleHillLogin(event)" class="space-y-4">
+            <!-- Auth Form -->
+            <form id="hill-login-form" onsubmit="handleHillAuthSubmit(event)" class="space-y-4">
                 <div>
                     <label class="block text-xs font-bold text-slate-300 mb-1.5 uppercase tracking-wider">
                         Corporate Email Address (@hillintl.com):
@@ -9481,14 +9481,49 @@
                     </div>
                 </div>
 
-                <div>
-                    <label class="block text-xs font-bold text-slate-300 mb-1.5 uppercase tracking-wider">
-                        Project Access Passcode:
-                    </label>
+                <!-- Personal Password (Login Mode) -->
+                <div id="hill-password-group">
+                    <div class="flex items-center justify-between mb-1.5">
+                        <label class="text-xs font-bold text-slate-300 uppercase tracking-wider">
+                            Personal Password:
+                        </label>
+                        <a href="javascript:void(0)" onclick="toggleAuthMode('reset')" class="text-[11px] text-sky-400 hover:text-sky-300 transition-colors">
+                            Forgot Password?
+                        </a>
+                    </div>
                     <div class="relative">
-                        <input type="password" id="hill-passcode-input" required
-                            placeholder="Enter project authorization key"
+                        <input type="password" id="hill-passcode-input"
+                            placeholder="Enter your personal password"
                             class="w-full bg-slate-950/80 border border-slate-700/80 rounded-xl px-4 py-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 transition-all font-mono" />
+                    </div>
+                </div>
+
+                <!-- Setup / Reset Fields (Only shown in register/reset mode) -->
+                <div id="hill-setup-fields" class="hidden space-y-4 pt-1 border-t border-slate-800/80">
+                    <div>
+                        <label class="block text-xs font-bold text-sky-400 mb-1.5 uppercase tracking-wider">
+                            Create Personal Password:
+                        </label>
+                        <input type="password" id="hill-new-password-input"
+                            placeholder="Minimum 6 characters"
+                            class="w-full bg-slate-950/80 border border-slate-700/80 rounded-xl px-4 py-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 transition-all font-mono" />
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-300 mb-1.5 uppercase tracking-wider">
+                            Confirm Password:
+                        </label>
+                        <input type="password" id="hill-confirm-password-input"
+                            placeholder="Re-enter password"
+                            class="w-full bg-slate-950/80 border border-slate-700/80 rounded-xl px-4 py-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 transition-all font-mono" />
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-amber-400 mb-1.5 uppercase tracking-wider">
+                            Project Authority Passcode:
+                        </label>
+                        <input type="password" id="hill-project-key-input"
+                            placeholder="Enter project activation key (HILL-REH-2026)"
+                            class="w-full bg-slate-950/80 border border-slate-700/80 rounded-xl px-4 py-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 transition-all font-mono" />
+                        <span class="block text-[10px] text-slate-500 mt-1">Required to authorize individual account activation.</span>
                     </div>
                 </div>
 
@@ -9498,14 +9533,18 @@
                 </button>
             </form>
 
+            <div class="mt-4 text-center">
+                <a href="javascript:void(0)" id="hill-toggle-mode-btn" onclick="toggleAuthMode('register')" class="text-xs text-sky-400 hover:text-sky-300 transition-colors font-semibold">
+                    First time here? Create your personal password →
+                </a>
+            </div>
+
             <div class="mt-6 pt-4 border-t border-slate-800/80 text-center text-[10px] text-slate-500 space-y-1">
                 <div>Client: <strong class="text-slate-400">MODON Properties</strong> • PMC: <strong class="text-slate-400">Hill International, Inc.</strong></div>
                 <div>Oracle Aconex Instance: <strong class="text-slate-400">Ras El Hekma (Project 1744833878)</strong></div>
             </div>
         </div>
-    </div>
-
-</body>
+    </div></body>
 
 
 

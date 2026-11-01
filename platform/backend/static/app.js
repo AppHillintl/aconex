@@ -78,46 +78,195 @@ function renderHillUserBadge(user) {
     }
 }
 
-async function handleHillLogin(event) {
+let currentAuthMode = 'login'; // 'login', 'register', 'reset'
+
+function toggleAuthMode(mode) {
+    currentAuthMode = mode;
+    const pwdGroup = document.getElementById('hill-password-group');
+    const setupFields = document.getElementById('hill-setup-fields');
+    const titleEl = document.getElementById('hill-gate-title');
+    const subTitleEl = document.getElementById('hill-gate-subtitle');
+    const btn = document.getElementById('hill-login-btn');
+    const toggleBtn = document.getElementById('hill-toggle-mode-btn');
+    const errBox = document.getElementById('hill-login-error');
+    const succBox = document.getElementById('hill-login-success');
+
+    if (errBox) { errBox.classList.add('hidden'); errBox.innerText = ''; }
+    if (succBox) { succBox.classList.add('hidden'); succBox.innerText = ''; }
+
+    if (mode === 'register') {
+        if (pwdGroup) pwdGroup.classList.add('hidden');
+        if (setupFields) setupFields.classList.remove('hidden');
+        if (titleEl) titleEl.innerText = 'Create Personal Password';
+        if (subTitleEl) subTitleEl.innerText = 'Set up your individual secure password for the Hill International portal.';
+        if (btn) btn.innerHTML = '<span>🔑</span> Create Password & Enter Dashboard';
+        if (toggleBtn) {
+            toggleBtn.innerText = '← Already have a password? Log in';
+            toggleBtn.onclick = () => toggleAuthMode('login');
+        }
+    } else if (mode === 'reset') {
+        if (pwdGroup) pwdGroup.classList.add('hidden');
+        if (setupFields) setupFields.classList.remove('hidden');
+        if (titleEl) titleEl.innerText = 'Reset Personal Password';
+        if (subTitleEl) subTitleEl.innerText = 'Authorize password reset using the Project Passcode.';
+        if (btn) btn.innerHTML = '<span>🔄</span> Update Password';
+        if (toggleBtn) {
+            toggleBtn.innerText = '← Back to Login';
+            toggleBtn.onclick = () => toggleAuthMode('login');
+        }
+    } else {
+        // Login mode
+        if (pwdGroup) pwdGroup.classList.remove('hidden');
+        if (setupFields) setupFields.classList.add('hidden');
+        if (titleEl) titleEl.innerText = 'Hill International Portal';
+        if (subTitleEl) subTitleEl.innerText = 'Access is restricted strictly to verified Hill International Inc. personnel.';
+        if (btn) btn.innerHTML = '<span>🔐</span> Authenticate & Enter Dashboard';
+        if (toggleBtn) {
+            toggleBtn.innerText = 'First time here? Create your personal password →';
+            toggleBtn.onclick = () => toggleAuthMode('register');
+        }
+    }
+}
+
+async function handleHillAuthSubmit(event) {
     if (event) event.preventDefault();
     const email = document.getElementById('hill-email-input').value.trim();
-    const passcode = document.getElementById('hill-passcode-input').value.trim();
-    const errBox = document.getElementById('hill-login-error');
-    const btn = document.getElementById('hill-login-btn');
+    const passcode = document.getElementById('hill-passcode-input') ? document.getElementById('hill-passcode-input').value.trim() : '';
+    const newPwd = document.getElementById('hill-new-password-input') ? document.getElementById('hill-new-password-input').value.trim() : '';
+    const confirmPwd = document.getElementById('hill-confirm-password-input') ? document.getElementById('hill-confirm-password-input').value.trim() : '';
+    const projectKey = document.getElementById('hill-project-key-input') ? document.getElementById('hill-project-key-input').value.trim() : '';
     
+    const errBox = document.getElementById('hill-login-error');
+    const succBox = document.getElementById('hill-login-success');
+    const btn = document.getElementById('hill-login-btn');
+
     if (errBox) { errBox.classList.add('hidden'); errBox.innerText = ''; }
-    if (btn) { btn.disabled = true; btn.innerText = 'Verifying credentials...'; }
+    if (succBox) { succBox.classList.add('hidden'); succBox.innerText = ''; }
+
+    // Client-side validation
+    if (!email.toLowerCase().endsWith('@hillintl.com')) {
+        if (errBox) {
+            errBox.innerText = "Access Denied: Only corporate email addresses ending with '@hillintl.com' are permitted.";
+            errBox.classList.remove('hidden');
+        }
+        return;
+    }
+
+    if (btn) btn.disabled = true;
 
     try {
-        const res = await _originalFetch('/api/auth/hill-login', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email, passcode })
-        });
-        const data = await res.json();
-        if (res.ok && data.success && data.token) {
-            localStorage.setItem('hill_auth_token', data.token);
-            renderHillUserBadge(data.user);
-            hideHillLoginGate();
-            // Reload all dashboard sections seamlessly
-            if (typeof loadAllProjects === 'function') loadAllProjects();
-            if (typeof fetchFeedSummary === 'function') fetchFeedSummary();
-            if (typeof fetchOverviewKPIs === 'function') fetchOverviewKPIs();
+        if (currentAuthMode === 'register') {
+            if (newPwd.length < 6) {
+                throw new Error("Password must be at least 6 characters long.");
+            }
+            if (newPwd !== confirmPwd) {
+                throw new Error("Passwords do not match. Please verify.");
+            }
+            if (!projectKey) {
+                throw new Error("Please enter the Project Authority Passcode.");
+            }
+            if (btn) btn.innerText = 'Creating personal account...';
+
+            const res = await _originalFetch('/api/auth/register-password', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email, password: newPwd, project_key: projectKey })
+            });
+            const data = await res.json();
+            if (res.ok && data.success && data.token) {
+                localStorage.setItem('hill_auth_token', data.token);
+                renderHillUserBadge(data.user);
+                hideHillLoginGate();
+                if (typeof loadAllProjects === 'function') loadAllProjects();
+                if (typeof fetchFeedSummary === 'function') fetchFeedSummary();
+                if (typeof fetchOverviewKPIs === 'function') fetchOverviewKPIs();
+            } else {
+                throw new Error(data.message || "Failed to create password.");
+            }
+
+        } else if (currentAuthMode === 'reset') {
+            if (newPwd.length < 6) {
+                throw new Error("New password must be at least 6 characters long.");
+            }
+            if (newPwd !== confirmPwd) {
+                throw new Error("Passwords do not match.");
+            }
+            if (!projectKey) {
+                throw new Error("Please enter the Project Authority Passcode.");
+            }
+            if (btn) btn.innerText = 'Updating password...';
+
+            const res = await _originalFetch('/api/auth/reset-password', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email, new_password: newPwd, project_key: projectKey })
+            });
+            const data = await res.json();
+            if (res.ok && data.success) {
+                toggleAuthMode('login');
+                if (succBox) {
+                    succBox.innerText = "Password updated successfully! Please log in with your new password.";
+                    succBox.classList.remove('hidden');
+                }
+            } else {
+                throw new Error(data.message || "Failed to reset password.");
+            }
+
         } else {
-            if (errBox) {
-                errBox.innerText = data.message || 'Authentication failed. Please check credentials.';
-                errBox.classList.remove('hidden');
+            // Normal Login Mode
+            if (!passcode) {
+                throw new Error("Please enter your personal password.");
+            }
+            if (btn) btn.innerText = 'Verifying credentials...';
+
+            const res = await _originalFetch('/api/auth/hill-login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email, passcode })
+            });
+            const data = await res.json();
+
+            // If server reports user needs password setup
+            if (data.needs_password_setup) {
+                toggleAuthMode('register');
+                if (errBox) {
+                    errBox.innerText = data.message;
+                    errBox.classList.remove('hidden');
+                }
+                return;
+            }
+
+            if (res.ok && data.success && data.token) {
+                localStorage.setItem('hill_auth_token', data.token);
+                renderHillUserBadge(data.user);
+                hideHillLoginGate();
+                if (typeof loadAllProjects === 'function') loadAllProjects();
+                if (typeof fetchFeedSummary === 'function') fetchFeedSummary();
+                if (typeof fetchOverviewKPIs === 'function') fetchOverviewKPIs();
+            } else {
+                throw new Error(data.message || "Authentication failed. Please verify credentials.");
             }
         }
     } catch (e) {
         if (errBox) {
-            errBox.innerText = 'Network error during authentication. Please retry.';
+            errBox.innerText = e.message;
             errBox.classList.remove('hidden');
         }
     } finally {
-        if (btn) { btn.disabled = false; btn.innerHTML = '<span>🔐</span> Authenticate & Enter Dashboard'; }
+        if (btn) {
+            btn.disabled = false;
+            if (currentAuthMode === 'register') {
+                btn.innerHTML = '<span>🔑</span> Create Password & Enter Dashboard';
+            } else if (currentAuthMode === 'reset') {
+                btn.innerHTML = '<span>🔄</span> Update Password';
+            } else {
+                btn.innerHTML = '<span>🔐</span> Authenticate & Enter Dashboard';
+            }
+        }
     }
 }
+
+function handleHillLogin(event) { handleHillAuthSubmit(event); }
 
 async function hillLogout() {
     const token = localStorage.getItem('hill_auth_token');

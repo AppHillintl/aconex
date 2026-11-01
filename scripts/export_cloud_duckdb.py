@@ -24,7 +24,8 @@ CLOUD_TABLES = [
     "fact_workflow_steps",
     "fact_workflows",
     "user_custom_emails",
-    "user_refresh_requests"
+    "user_refresh_requests",
+    "user_credentials"
 ]
 
 def build_cloud_database_and_zip(source_db_path=None, target_db_path=None, target_zip_path=None):
