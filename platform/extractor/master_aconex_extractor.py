@@ -61,7 +61,7 @@ BIP_REPORT_TARGETS = [
     {"name": "Mail Thread python",                   "result_id": "2534122", "filename": "Mail Thread (2).csv"},
     {"name": "Workflow Status python",                "result_id": "2533941", "filename": "Workflow Status (1).csv"},
     {"name": "Workflow Documents Review Outcome",     "result_id": "2534130", "filename": "Workflow Documents Review Outcome (1).csv"},
-    {"name": "Project Directory Python",             "result_id": "2534137", "filename": "Project Directory.csv", "is_html": True}
+    {"name": "Project Directory update",             "result_id": "2534137", "filename": "Project Directory.csv", "is_deep_only": True}
 ]
 
 DASHBOARD_PROCESS_TARGETS = [
@@ -323,7 +323,7 @@ def extract_document_register(page, output_dir=config.OUTPUT_DIR):
 # -----------------------------------------------------------------------------
 # STEP 2: EXTRACT ALL 6 BI PUBLISHER CSV REPORTS
 # -----------------------------------------------------------------------------
-def extract_all_bip_reports(page, context, output_dir=config.OUTPUT_DIR):
+def extract_all_bip_reports(page, context, output_dir=config.OUTPUT_DIR, is_deep=False):
     """Captures session authorization & streams all 6 BIP reports directly via HTTP."""
     log.info("\n" + "="*80)
     log.info("STEP 2: EXTRACTING ALL 6 BI PUBLISHER CSV REPORTS")
@@ -376,6 +376,9 @@ def extract_all_bip_reports(page, context, output_dir=config.OUTPUT_DIR):
     req_headers.pop('content-length', None)
     
     for rep in BIP_REPORT_TARGETS:
+        if rep.get("is_deep_only") and not is_deep:
+            log.info(f"[BIP] Skipping {rep['name']} (only extracted during DEEP sync as requested).")
+            continue
         res_id = rep["result_id"]
         fname = rep["filename"]
         out_file = os.path.join(output_dir, fname)
@@ -398,11 +401,11 @@ def extract_all_bip_reports(page, context, output_dir=config.OUTPUT_DIR):
                 # Validate that download is real data and not an HTML redirect / login page
                 is_valid = True
                 with open(temp_out, "rb") as f_chk:
-                    sample = f_chk.read(500).lower()
-                    if b"<html" in sample or b"<!doctype" in sample or b"url=/logon" in sample:
+                    sample = f_chk.read(1000).lower()
+                    if b"url=/logon" in sample or b"/signin-security" in sample or b"oracle cloud - sign in" in sample:
                         is_valid = False
                 
-                if total > 1000 and is_valid:
+                if total > 500 and is_valid:
                     if os.path.exists(out_file):
                         try:
                             os.remove(out_file)
@@ -411,8 +414,18 @@ def extract_all_bip_reports(page, context, output_dir=config.OUTPUT_DIR):
                     os.rename(temp_out, out_file)
                     size_mb = os.path.getsize(out_file) / (1024 * 1024)
                     log.info(f"[SUCCESS] Saved {fname} ({size_mb:.2f} MB)!")
-                    if rep.get("is_html"):
-                        format_project_directory(out_file)
+                    
+                    if fname == "Project Directory.csv":
+                        with open(out_file, "rb") as f_test:
+                            head = f_test.read(200).lower()
+                            if b"<html" in head or b"<!doctype" in head or b"<table" in head:
+                                format_project_directory(out_file)
+                        try:
+                            data_dir_file = os.path.join(os.path.dirname(os.path.dirname(output_dir)), "project directory.csv")
+                            shutil.copy2(out_file, data_dir_file)
+                            log.info(f"[SUCCESS] Synced updated Project Directory to {data_dir_file}")
+                        except Exception as e:
+                            log.warning(f"Could not copy Project Directory: {e}")
                 else:
                     log.warning(f"[PROTECTION] Downloaded {fname} was an invalid/login redirect ({total} bytes). Preserving existing valid file!")
                     if os.path.exists(temp_out):
@@ -952,7 +965,8 @@ def run_master_pipeline(mode="full", phase="all"):
 
         if run_mail:
             set_sync_state(2, f"Step 2/{total_steps}: Exporting BI Publisher Reports (CSV)...", "Streaming workflow transmittal statuses, review outcomes, and project directory...", 40)
-            extract_all_bip_reports(page, ctx, config.OUTPUT_DIR)
+            is_deep = (active_mode == 'full')
+            extract_all_bip_reports(page, ctx, config.OUTPUT_DIR, is_deep=is_deep)
 
             set_sync_state(2, f"Step 2/{total_steps}: Extracting Mail Register...", "Queueing and downloading mail archive bundles from Temporary Files...", 58)
             extract_mail_bundles(page, config.OUTPUT_DIR, is_delta=(active_mode == "delta"))

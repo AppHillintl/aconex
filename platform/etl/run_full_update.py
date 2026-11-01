@@ -452,6 +452,37 @@ def main():
     ORDER BY overdue_steps DESC;
     """)
     print(f"  [OK] Materialized agg_org_scorecard, agg_user_workload, agg_step_bottlenecks, agg_lookahead.")
+
+    # -------------------------------------------------------------------------
+    # 5b. Ingest Project Directory into dim_user_directory (Deep Sync)
+    # -------------------------------------------------------------------------
+    dir_csv = os.path.join(UP_DIR, "Project Directory.csv")
+    if not os.path.exists(dir_csv):
+        dir_csv = os.path.join(os.path.dirname(os.path.dirname(UP_DIR)), "project directory.csv")
+    if os.path.exists(dir_csv):
+        print("  [ETL] Ingesting updated Project Directory into dim_user_directory...")
+        try:
+            con.execute(f'''
+                CREATE OR REPLACE TABLE stg_project_directory AS 
+                SELECT * FROM read_csv_auto('{dir_csv.replace('\\', '/')}', header=True, ignore_errors=true, union_by_name=True);
+            ''')
+            con.execute('''
+                CREATE OR REPLACE TABLE dim_user_directory AS
+                SELECT 
+                    trim(user_name) AS user_name,
+                    trim(regexp_replace(user_name, '^(Mr|Mrs|Ms|Dr|Eng)\\s+', '', 'i')) AS clean_name,
+                    trim(email) AS email,
+                    trim(organization_name) AS organization_name,
+                    trim(position) AS position,
+                    trim(user_type) AS user_type
+                FROM stg_project_directory
+                WHERE user_name IS NOT NULL;
+            ''')
+            u_count = con.execute("SELECT count(*) FROM dim_user_directory").fetchone()[0]
+            h_count = con.execute("SELECT count(*) FROM dim_user_directory WHERE lower(email) LIKE '%@hillintl.com'").fetchone()[0]
+            print(f"  [OK] dim_user_directory updated: {u_count} total users, {h_count} Hill corporate emails.")
+        except Exception as e:
+            print(f"  [WARN] Could not ingest Project Directory: {e}")
     
     # -------------------------------------------------------------------------
     # 6. Delete Redundant Duplicate Files
