@@ -4150,34 +4150,42 @@ def get_database_cutoff_api():
     """Returns the latest transaction or record date registered in the analytical database across all activity tables."""
     con = get_db()
     try:
-        latest_cutoff = con.execute("""
-            SELECT MAX(latest_dt) FROM (
-                SELECT MAX(TRY_CAST(transmitted_sent_date AS DATE)) as latest_dt FROM fact_document_transmittals WHERE TRY_CAST(transmitted_sent_date AS DATE) <= CURRENT_DATE
-                UNION ALL
-                SELECT MAX(TRY_CAST(transmittal_in_date AS DATE)) as latest_dt FROM fact_transmittal_lifecycle WHERE TRY_CAST(transmittal_in_date AS DATE) <= CURRENT_DATE
-                UNION ALL
-                SELECT MAX(TRY_CAST(date_modified AS DATE)) as latest_dt FROM dim_documents WHERE TRY_CAST(date_modified AS DATE) <= CURRENT_DATE AND TRY_CAST(date_modified AS DATE) <= '2026-12-31'
-                UNION ALL
-                SELECT MAX(TRY_CAST(sent_date AS DATE)) as latest_dt FROM fact_rfis WHERE TRY_CAST(sent_date AS DATE) <= CURRENT_DATE
-                UNION ALL
-                SELECT MAX(TRY_CAST(sent_date AS DATE)) as latest_dt FROM fact_mail WHERE TRY_CAST(sent_date AS DATE) <= CURRENT_DATE
-                UNION ALL
-                SELECT MAX(TRY_CAST(response_sent_date AS DATE)) as latest_dt FROM fact_mail_responses WHERE TRY_CAST(response_sent_date AS DATE) <= CURRENT_DATE
-                UNION ALL
-                SELECT MAX(TRY_CAST(start_date AS DATE)) as latest_dt FROM fact_workflows WHERE TRY_CAST(start_date AS DATE) <= CURRENT_DATE
-                UNION ALL
-                SELECT MAX(TRY_CAST(date_completed AS DATE)) as latest_dt FROM fact_workflow_steps WHERE TRY_CAST(date_completed AS DATE) <= CURRENT_DATE
-                UNION ALL
-                SELECT MAX(TRY_CAST(date_in AS DATE)) as latest_dt FROM fact_workflow_steps WHERE TRY_CAST(date_in AS DATE) <= CURRENT_DATE
-            )
-        """).fetchone()[0]
-        dt_str = str(latest_cutoff) if latest_cutoff else "2026-10-20"
+        existing_tables = set(r[0].lower() for r in con.execute("SHOW TABLES").fetchall())
+
+        queries = []
+        if "dim_documents" in existing_tables:
+            queries.append("SELECT MAX(TRY_CAST(date_modified AS DATE)) as latest_dt FROM dim_documents WHERE TRY_CAST(date_modified AS DATE) <= CURRENT_DATE AND TRY_CAST(date_modified AS DATE) <= '2026-12-31'")
+        if "fact_mail" in existing_tables:
+            queries.append("SELECT MAX(TRY_CAST(sent_date AS DATE)) as latest_dt FROM fact_mail WHERE TRY_CAST(sent_date AS DATE) <= CURRENT_DATE")
+        if "fact_rfis" in existing_tables:
+            queries.append("SELECT MAX(TRY_CAST(sent_date AS DATE)) as latest_dt FROM fact_rfis WHERE TRY_CAST(sent_date AS DATE) <= CURRENT_DATE")
+        if "fact_workflows" in existing_tables:
+            queries.append("SELECT MAX(TRY_CAST(start_date AS DATE)) as latest_dt FROM fact_workflows WHERE TRY_CAST(start_date AS DATE) <= CURRENT_DATE")
+        if "fact_workflow_steps" in existing_tables:
+            queries.append("SELECT MAX(TRY_CAST(date_completed AS DATE)) as latest_dt FROM fact_workflow_steps WHERE TRY_CAST(date_completed AS DATE) <= CURRENT_DATE")
+            queries.append("SELECT MAX(TRY_CAST(date_in AS DATE)) as latest_dt FROM fact_workflow_steps WHERE TRY_CAST(date_in AS DATE) <= CURRENT_DATE")
+        if "fact_document_transmittals" in existing_tables:
+            queries.append("SELECT MAX(TRY_CAST(transmitted_sent_date AS DATE)) as latest_dt FROM fact_document_transmittals WHERE TRY_CAST(transmitted_sent_date AS DATE) <= CURRENT_DATE")
+        if "fact_transmittal_lifecycle" in existing_tables:
+            queries.append("SELECT MAX(TRY_CAST(transmittal_in_date AS DATE)) as latest_dt FROM fact_transmittal_lifecycle WHERE TRY_CAST(transmittal_in_date AS DATE) <= CURRENT_DATE")
+        if "fact_mail_responses" in existing_tables:
+            queries.append("SELECT MAX(TRY_CAST(response_sent_date AS DATE)) as latest_dt FROM fact_mail_responses WHERE TRY_CAST(response_sent_date AS DATE) <= CURRENT_DATE")
+
+        if queries:
+            union_sql = " UNION ALL ".join(queries)
+            full_sql = f"SELECT MAX(latest_dt) FROM ({union_sql})"
+            latest_cutoff = con.execute(full_sql).fetchone()[0]
+        else:
+            latest_cutoff = None
+
+        dt_str = str(latest_cutoff) if latest_cutoff else "2026-11-01"
         try:
             from datetime import datetime
             dt_obj = datetime.strptime(dt_str, "%Y-%m-%d")
             formatted = dt_obj.strftime("%b %d, %Y")
         except Exception:
             formatted = dt_str
+
         last_sync = None
         try:
             state_file = os.path.join(os.path.dirname(__file__), "..", "extractor", "sync_state.json")
@@ -4191,11 +4199,11 @@ def get_database_cutoff_api():
         return {
             "cutoff_date": dt_str,
             "formatted": formatted,
-            "last_sync": last_sync or "2026-10-31 08:12:01",
-            "last_sync_formatted": "Today 08:12 AM" if (last_sync and "2026-10-31" in last_sync) else "Oct 31, 08:12 AM"
+            "last_sync": last_sync or "2026-11-01 08:12:01",
+            "last_sync_formatted": "Today 08:12 AM" if (last_sync and "2026-11-01" in last_sync) else "Nov 01, 08:12 AM"
         }
     except Exception as e:
-        return {"cutoff_date": "2026-10-20", "formatted": "Oct 20, 2026", "error": str(e)}
+        return {"cutoff_date": "2026-11-01", "formatted": "Nov 01, 2026", "error": str(e)}
     finally:
         con.close()
 
