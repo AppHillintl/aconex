@@ -82,40 +82,40 @@ def ensure_login(page, context):
         time.sleep(1)
         cur_url = page.url.lower()
         
+        # Check if already authenticated on Aconex Hub
+        if page.locator("#nav-bar-DOC, #nav-bar-CORRESPONDENCE").count() > 0 or page.frame(name="main"):
+            log.info(f"Successfully authenticated on Aconex Hub! ({page.url})")
+            time.sleep(3)
+            return True
+
         # Check for 2FA challenge screen (device trust expired)
         if "signin-security" in cur_url or "two-step" in cur_url or page.locator("text='Two-Step Verification'").count() > 0 or page.locator("text='Enter Passcode'").count() > 0:
             log.error("[AUTH_REQUIRED] Oracle 2FA Multi-Factor Authentication required. 7-day device trust expired.")
             sys.exit(2)
         
         # Detect Oracle SSO form
-        if page.locator("input[type='password']").count() > 0 or "oraclecloud" in cur_url or "idcslogin" in cur_url:
-            log.info("Oracle SSO login detected. Entering credentials...")
-            time.sleep(2)
+        pwd_inp = page.locator("input[type='password']")
+        if pwd_inp.count() > 0 and pwd_inp.first.is_visible():
             user_inp = page.locator("input[name='username'], input[type='text']")
             if user_inp.count() > 0 and user_inp.first.is_visible():
                 if not user_inp.first.input_value() and config.ACONEX_USERNAME:
                     user_inp.first.fill(config.ACONEX_USERNAME)
                     time.sleep(0.5)
-            pwd_inp = page.locator("input[type='password']")
-            if pwd_inp.count() > 0 and pwd_inp.first.is_visible() and config.ACONEX_PASSWORD:
+            if config.ACONEX_PASSWORD:
                 pwd_inp.first.fill(config.ACONEX_PASSWORD)
                 time.sleep(1)
             btn = page.locator("button:has-text('Sign In'), input[value='Sign In']")
             if btn.count() > 0 and btn.first.is_visible():
+                log.info("Submitting Oracle SSO credentials...")
                 btn.first.click()
-                time.sleep(4)
+                time.sleep(6)
                 
-        if "mea.aconex.com" in cur_url and "authentication/index.html" not in cur_url:
-            log.info(f"Successfully authenticated on Aconex Hub! ({page.url})")
-            time.sleep(5)
-            return True
-            
-    if "mea.aconex.com" not in page.url.lower() or "authentication/index.html" in page.url.lower():
-        log.error(f"[AUTH_FAILED] Could not authenticate on Aconex Hub. Current URL: {page.url}")
-        sys.exit(1)
-        
-    log.warning("Authentication check finished.")
-    return True
+    if page.locator("#nav-bar-DOC, #nav-bar-CORRESPONDENCE").count() > 0 or page.frame(name="main"):
+        log.info(f"Successfully authenticated on Aconex Hub! ({page.url})")
+        return True
+
+    log.error(f"[AUTH_FAILED] Could not authenticate on Aconex Hub. Current URL: {page.url}")
+    sys.exit(1)
 
 
 # -----------------------------------------------------------------------------
@@ -478,44 +478,63 @@ def extract_mail_bundles(page, output_dir=config.OUTPUT_DIR, is_delta=False):
     if not frame:
         log.error("Content frame 'main' not found for Mail Search.")
         return False
-        
-    # Target EXCLUSIVELY "My Searches" (strictly ignore and exclude "My Organization's Searches")
-    my_searches_group = frame.locator("ul.saved-search-list-container > li:has(heading:text-matches('My.*Search', 'i')):not(:has(heading:text-matches('Org', 'i')))")
-    if my_searches_group.count() == 0:
-        my_searches_group = frame.locator("ul:has(heading:text-matches('My.*Search', 'i')):not(:has(heading:text-matches('Org', 'i')))")
 
-    items = my_searches_group.locator("li[title^='Load: '] > div[ng-click*='triggerSavedSearch']")
-    count = items.count()
-    log.info(f"Total 'My Saved Searches' (User Criteria / Contract-based) available: {count} (Organization searches excluded).")
+    time.sleep(4)
+    # Extract strictly from user's "My Searches" container (strictly exclude "My Organization's Searches")
+    mail_searches = frame.evaluate('''() => {
+        const container = document.querySelector('ul.saved-search-list-container, .saved-search-list');
+        if (!container) return [];
+        const groups = Array.from(container.querySelectorAll(':scope > li, .saved-search-list > ul > li'));
+        const myGroup = groups.find(g => {
+            const h = g.querySelector('heading, h2, h3, h4, h5, div.heading, span.heading, div, span');
+            if (!h) return false;
+            const text = (h.innerText || h.textContent || '').trim().toLowerCase();
+            return text.includes('my search') && !text.includes('org');
+        });
+        if (!myGroup) return [];
+        const items = Array.from(myGroup.querySelectorAll("li[title^='Load: '] > div[ng-click*='triggerSavedSearch']"));
+        return items.map((el, i) => {
+            const title = el.getAttribute('title') || (el.parentElement ? el.parentElement.getAttribute('title') : '');
+            const name = (el.innerText || el.textContent || '').trim();
+            return { index: i, name: name || title.replace('Load: ', ''), title: title };
+        }).filter(x => x.name.length > 0);
+    }''')
+
+    count = len(mail_searches)
+    log.info(f"Total 'My Saved Searches' (Contract-based) available: {count} (0 Organization searches).")
     
     if count == 0:
-        # Fallback if list structure varies: filter out any items whose parent heading mentions Organization
-        log.warning("Explicit 'My Searches' group container not resolved via CSS. Filtering items via DOM...")
-        all_lis = frame.locator("li[title^='Load: '] > div[ng-click*='triggerSavedSearch']")
-        count = all_lis.count()
-        items = all_lis
+        log.warning("No searches found under 'My Searches'.")
+        return False
 
-    for idx in range(count):
+    for item in mail_searches:
+        idx = item['index']
+        name = item['name']
         try:
-            item_el = items.nth(idx)
-            item_text = item_el.inner_text().strip()
-            
-            # Check heading in parent container to strictly reject any organization searches
-            is_org = item_el.evaluate("""(el) => {
-                let parent = el.closest('ul, li');
-                while (parent) {
-                    const h = parent.querySelector('heading, h2, h3, h4, h5');
-                    if (h && /org/i.test(h.innerText)) return true;
-                    parent = parent.parentElement;
+            log.info(f"\n[{idx+1}/{count}] Triggering My Saved Search bundle: '{name}'...")
+            clicked = frame.evaluate('''(targetIdx) => {
+                const container = document.querySelector('ul.saved-search-list-container, .saved-search-list');
+                if (!container) return false;
+                const groups = Array.from(container.querySelectorAll(':scope > li, .saved-search-list > ul > li'));
+                const myGroup = groups.find(g => {
+                    const h = g.querySelector('heading, h2, h3, h4, h5, div.heading, span.heading, div, span');
+                    if (!h) return false;
+                    const text = (h.innerText || h.textContent || '').trim().toLowerCase();
+                    return text.includes('my search') && !text.includes('org');
+                });
+                if (!myGroup) return false;
+                const items = Array.from(myGroup.querySelectorAll("li[title^='Load: '] > div[ng-click*='triggerSavedSearch']"));
+                if (items[targetIdx]) {
+                    items[targetIdx].click();
+                    return true;
                 }
                 return false;
-            }""")
-            if is_org:
-                log.info(f"Skipping Organization search: '{item_text}' (Excluded by user directive).")
+            }''', idx)
+            
+            if not clicked:
+                log.warning(f"Could not click item index {idx} ('{name}').")
                 continue
-
-            log.info(f"\n[{idx+1}/{count}] Triggering My Saved Search bundle: '{item_text}'...")
-            item_el.click()
+                
             time.sleep(8)
             
             # Click Export to Excel -> Row per recipient
@@ -539,7 +558,7 @@ def extract_mail_bundles(page, output_dir=config.OUTPUT_DIR, is_delta=False):
                                 for zf in z.namelist():
                                     z.extract(zf, output_dir)
                     except Exception:
-                        log.info(f"Queued bundle '{item_text}' to Temporary Files in Aconex backend.")
+                        log.info(f"Queued bundle '{name}' to Temporary Files in Aconex backend.")
                         time.sleep(2)
                         close_btn = frame.locator("button:has-text('Close'), a:has-text('Close'), .ui-dialog-titlebar-close").first
                         if close_btn.count() > 0 and close_btn.is_visible():
@@ -547,7 +566,7 @@ def extract_mail_bundles(page, output_dir=config.OUTPUT_DIR, is_delta=False):
                         time.sleep(2)
             time.sleep(3)
         except Exception as e:
-            log.warning(f"Error triggering bundle {idx}: {e}")
+            log.warning(f"Error triggering bundle {idx} ('{name}'): {e}")
         
     # Download all generated Mail files from Temporary Files
     download_mail_files_from_temp(page, output_dir)
@@ -701,30 +720,74 @@ def trigger_document_register_export(page):
             log.warning("Document Search frame not found.")
             return None
 
-        # Open Saved Searches dropdown if present
-        saved_btn = frame.locator("button:has-text('Saved Searches'), button[ng-click*='openPopup'], div[ng-bind*='savedSearch.displayText']").first
-        if saved_btn.count() > 0 and saved_btn.is_visible():
-            saved_btn.click()
-            time.sleep(2)
+        time.sleep(4)
+        # Extract list of user's grouped searches strictly from "My Searches"
+        doc_groups = frame.evaluate('''() => {
+            const results = [];
+            const all = Array.from(document.querySelectorAll('*'));
+            const mySearchHeadings = all.filter(el => {
+                const t = (el.innerText || '').trim();
+                return t === 'My Searches';
+            });
+            for (const h of mySearchHeadings) {
+                let parent = h.parentElement;
+                for (let lvl = 0; lvl < 5 && parent; lvl++) {
+                    const items = Array.from(parent.querySelectorAll('li, div, a')).filter(el => {
+                        const t = (el.innerText || '').trim();
+                        return (t.includes('Document type') || t.includes('Document types')) && !t.includes('Organization');
+                    });
+                    if (items.length > 0) {
+                        items.forEach((it, i) => {
+                            const t = (it.innerText || '').trim().split('\n')[0];
+                            if (!results.find(r => r.name === t)) {
+                                results.push({ index: i, name: t });
+                            }
+                        });
+                        break;
+                    }
+                    parent = parent.parentElement;
+                }
+            }
+            return results;
+        }''')
 
-        # Locate ONLY 'My Searches' group (strictly exclude Organization Saved Searches)
-        doc_group = frame.locator("ul.saved-search-list-container > li:has(heading:text-matches('My.*Search', 'i')):not(:has(heading:text-matches('Org', 'i')))")
-        if doc_group.count() == 0:
-            doc_group = frame.locator("ul:has(heading:text-matches('My.*Search', 'i')):not(:has(heading:text-matches('Org', 'i')))")
+        count = len(doc_groups)
+        log.info(f"Total 'My Saved Searches' Document groups available: {count}: {[g['name'] for g in doc_groups]}")
 
-        doc_items = doc_group.locator("li[title^='Load: '] > div[ng-click*='triggerSavedSearch']")
-        doc_count = doc_items.count()
-        log.info(f"Total 'My Saved Searches' Document groups available: {doc_count}")
-
-        if doc_count > 0:
-            for d_idx in range(doc_count):
-                item_el = doc_items.nth(d_idx)
-                group_name = item_el.inner_text().strip()
-                log.info(f"\n[DOC GROUP {d_idx+1}/{doc_count}] Triggering My Saved Search: '{group_name}'...")
-                item_el.click()
+        if count > 0:
+            for g_info in doc_groups:
+                idx = g_info['index']
+                group_name = g_info['name']
+                log.info(f"\n[DOC GROUP {idx+1}/{count}] Triggering My Saved Search: '{group_name}'...")
+                
+                # Click the group in My Searches
+                clicked = frame.evaluate('''(targetName) => {
+                    const all = Array.from(document.querySelectorAll('*'));
+                    const mySearchHeadings = all.filter(el => (el.innerText || '').trim() === 'My Searches');
+                    for (const h of mySearchHeadings) {
+                        let parent = h.parentElement;
+                        for (let lvl = 0; lvl < 5 && parent; lvl++) {
+                            const items = Array.from(parent.querySelectorAll('li, div, a')).filter(el => {
+                                const t = (el.innerText || '').trim().split('\n')[0];
+                                return t === targetName;
+                            });
+                            if (items.length > 0) {
+                                items[0].click();
+                                return true;
+                            }
+                            parent = parent.parentElement;
+                        }
+                    }
+                    return false;
+                }''', group_name)
+                
+                if not clicked:
+                    log.warning(f"Could not click document group '{group_name}'.")
+                    continue
+                    
                 time.sleep(8)
 
-                # Click Export to Excel -> confirm
+                # Click Export to Excel -> confirm OK
                 exp = frame.locator("button:has-text('Export to Excel'), button:has-text('Export'), a:has-text('Export')").first
                 if exp.count() > 0 and exp.is_visible():
                     exp.click()
@@ -734,22 +797,10 @@ def trigger_document_register_export(page):
                         confirm.click()
                     log.info(f"[SUCCESS] Document Register group '{group_name}' queued to Temporary Files.")
                 time.sleep(3)
-            return doc_count
+            return count
         else:
-            log.warning("No grouped saved searches found under 'My Searches' in Documents. Executing default search export as fallback.")
-            s_btn = frame.locator("button:has-text('Search'), input[value='Search']").first
-            if s_btn.count() > 0:
-                s_btn.click()
-                time.sleep(10)
-            exp = frame.locator("button:has-text('Export to Excel'), button:has-text('Export'), a:has-text('Export')").first
-            if exp.count() > 0 and exp.is_visible():
-                exp.click()
-                time.sleep(2)
-                confirm = frame.locator("button:has-text('OK'), button:has-text('Export'), button:has-text('Continue')").first
-                if confirm.count() > 0 and confirm.is_visible():
-                    confirm.click()
-                log.info("[SUCCESS] Fallback document register export queued.")
-            return 1
+            log.warning("No grouped saved searches found under 'My Searches' in Documents.")
+            return None
     except Exception as e:
         log.warning(f"Could not trigger Document Register export: {e}")
         return None
