@@ -283,7 +283,7 @@ def get_feed_items(
                     COALESCE(created_by, '') AS author,
                     COALESCE(status, 'Current') AS status,
                     COALESCE(date_modified, revision_date) AS item_date,
-                    COALESCE(NULLIF(trim(aconex_url), ''), 'https://mea.aconex.com/ViewDoc?trackingid=' || trim(tracking_id) || '&projectid=1744833878&cversion=1&tab=0') AS aconex_url
+                    COALESCE(NULLIF(trim(aconex_url), ''), 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=DOC-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=documentNumber%3A%22' || TRIM(BOTH '''' FROM TRIM(BOTH '"' FROM TRIM(document_no))) || '%22') AS aconex_url
                 FROM dim_documents
                 WHERE CAST(COALESCE(date_modified, revision_date) AS DATE) >= '{start_date}' 
                   AND CAST(COALESCE(date_modified, revision_date) AS DATE) <= '{end_date}'

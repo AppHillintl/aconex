@@ -27,10 +27,14 @@ def push_to_render_cloud(render_url=None, sync_secret=None, logger=None):
         if logger:
             logger(msg)
         else:
-            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}")
+            try:
+                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}")
+            except UnicodeEncodeError:
+                safe_msg = msg.encode('ascii', errors='replace').decode('ascii')
+                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {safe_msg}")
 
     log("=" * 70)
-    log(f"🚀 INITIATING INSTANT CLOUD SYNC TO RENDER ({url})")
+    log(f"[SYNC] INITIATING INSTANT CLOUD SYNC TO RENDER ({url})")
     log("=" * 70)
 
     t0 = time.time()
@@ -57,16 +61,16 @@ def push_to_render_cloud(render_url=None, sync_secret=None, logger=None):
         if resp.status_code == 200:
             data = resp.json()
             elapsed = time.time() - t0
-            log(f"✅ SUCCESS: Render Cloud is 100% updated and hot-reloaded in {elapsed:.1f}s!")
+            log(f"[OK] SUCCESS: Render Cloud is 100% updated and hot-reloaded in {elapsed:.1f}s!")
             log(f"   Cutoff Date: {data.get('cutoff_date')} | Total Mails: {data.get('total_mails'):,} | RFIs: {data.get('total_rfis'):,} | Docs: {data.get('total_docs'):,}")
             log("=" * 70)
             return True, data
         else:
-            log(f"❌ ERROR: Render returned status {resp.status_code}: {resp.text[:300]}")
+            log(f"[ERROR] Render returned status {resp.status_code}: {resp.text[:300]}")
             return False, resp.text
             
     except Exception as e:
-        log(f"❌ EXCEPTION during cloud sync: {e}")
+        log(f"[EXCEPTION] during cloud sync: {e}")
         return False, str(e)
 
 if __name__ == "__main__":

@@ -19,6 +19,16 @@ elif _SRV_CLOUD_DB.exists():
 else:
     DB_PATH = str(_SRV_LOCAL_DB).replace("\\", "/")
 
+def _to_authoritative_aconex_doc_url(raw_doc_no):
+    clean = str(raw_doc_no or "").strip().strip("'").strip('"').strip()
+    q = urllib.parse.quote(f'documentNumber:"{clean}"')
+    return f"https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=DOC-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery={q}"
+
+def _to_authoritative_aconex_mail_url(raw_mail_no):
+    clean = str(raw_mail_no or "").strip().strip("'").strip('"').strip()
+    q = urllib.parse.quote(f'mailNumber:"{clean}"')
+    return f"https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery={q}"
+
 def get_db():
     return duckdb.connect(DB_PATH, read_only=True)
 
@@ -177,9 +187,9 @@ def get_safety_items(
             url = r[9] or ""
             if not url.startswith("http"):
                 if r[10] == "Document":
-                    url = f"/api/aconex/doc?doc_no={urllib.parse.quote(str(r[0] or '').strip())}"
+                    url = _to_authoritative_aconex_doc_url(r[0])
                 else:
-                    url = f"/api/aconex/mail?mail_no={urllib.parse.quote(str(r[0] or '').strip())}"
+                    url = _to_authoritative_aconex_mail_url(r[0])
             items.append({
                 "mail_no": r[0],
                 "mail_type": r[1],
@@ -328,9 +338,9 @@ def get_qaqc_items(
             url = r[8] or ""
             if not url.startswith("http"):
                 if r[9] == "Mail":
-                    url = f"/api/aconex/mail?mail_no={urllib.parse.quote(str(r[0] or '').strip())}"
+                    url = _to_authoritative_aconex_mail_url(r[0])
                 else:
-                    url = f"/api/aconex/doc?doc_no={urllib.parse.quote(str(r[0] or '').strip())}"
+                    url = _to_authoritative_aconex_doc_url(r[0])
             items.append({
                 "document_no": r[0],
                 "doc_type": r[1],
@@ -481,9 +491,9 @@ def get_site_ops_items(
             url = r[9] or ""
             if not url.startswith("http"):
                 if r[10] == "Document":
-                    url = f"/api/aconex/doc?doc_no={urllib.parse.quote(str(r[0] or '').strip())}"
+                    url = _to_authoritative_aconex_doc_url(r[0])
                 else:
-                    url = f"/api/aconex/mail?mail_no={urllib.parse.quote(str(r[0] or '').strip())}"
+                    url = _to_authoritative_aconex_mail_url(r[0])
             items.append({
                 "mail_no": r[0],
                 "mail_type": r[1],
@@ -640,9 +650,9 @@ def get_technical_office_items(
             url = r[8] or ""
             if not url.startswith("http"):
                 if r[9] == "Mail":
-                    url = f"/api/aconex/mail?mail_no={urllib.parse.quote(str(r[0] or '').strip())}"
+                    url = _to_authoritative_aconex_mail_url(r[0])
                 else:
-                    url = f"/api/aconex/doc?doc_no={urllib.parse.quote(str(r[0] or '').strip())}"
+                    url = _to_authoritative_aconex_doc_url(r[0])
             items.append({
                 "document_no": r[0],
                 "doc_type": r[1],
@@ -823,9 +833,9 @@ def get_contractual_items(
             url = r[9] or ""
             if not url.startswith("http"):
                 if r[10] == "Document":
-                    url = f"/api/aconex/doc?doc_no={urllib.parse.quote(str(r[0] or '').strip())}"
+                    url = _to_authoritative_aconex_doc_url(r[0])
                 else:
-                    url = f"/api/aconex/mail?mail_no={urllib.parse.quote(str(r[0] or '').strip())}"
+                    url = _to_authoritative_aconex_mail_url(r[0])
             items.append({
                 "item_no": r[0],
                 "item_type": r[1],
@@ -995,9 +1005,9 @@ def get_commercial_items(
             url = r[9] or ""
             if not url.startswith("http"):
                 if r[10] == "Document":
-                    url = f"/api/aconex/doc?doc_no={urllib.parse.quote(str(r[0] or '').strip())}"
+                    url = _to_authoritative_aconex_doc_url(r[0])
                 else:
-                    url = f"/api/aconex/mail?mail_no={urllib.parse.quote(str(r[0] or '').strip())}"
+                    url = _to_authoritative_aconex_mail_url(r[0])
             items.append({
                 "item_no": r[0],
                 "item_type": r[1],

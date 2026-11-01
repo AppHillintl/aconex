@@ -708,82 +708,49 @@ function formatAppDate(dateStr) {
 }
 
 // ==========================================
-// ORACLE ACONEX OFFICIAL LINK RESOLVERS
-// Hyperlinks ALWAYS use direct IDs:
-//   - Mails / RFIs: /MiniURL?type=MAILSEARCH&...&cid={id}
-//   - Documents: /ViewDoc?trackingid={id}&...
+// ORACLE ACONEX OFFICIAL AUTHORITATIVE LINK RESOLVERS
+// Guaranteed to target Document Register (DOC-SEARCH), Mailbox (MAIL-SEARCH), or Workflows
+// Never opens Temporary Files.
 // ==========================================
 function getAconexMailUrl(item) {
     const direct = String(item?.aconex_url || '');
-    if (direct.includes('/MiniURL?') || direct.includes('/ViewDoc?')) return direct;
+    if (direct.includes('/MiniURL?') || direct.includes('MENU_TARGET=MAIL-SEARCH')) return direct;
     const cid = item?.correspondence_id || item?.mail_id;
     if (cid && !isNaN(Number(cid))) {
         return `https://mea.aconex.com/MiniURL?type=MAILSEARCH&mailbox=5&pid=1744833878&cid=${cid}`;
     }
     const mailNo = String(item?.mail_no || item?.rfi_no || item?.item_no || '').replace(/^["']+|["']+$/g, '').trim();
     if (mailNo) {
-        return `/api/aconex/mail?mail_no=${encodeURIComponent(mailNo)}`;
+        return `https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A%22${encodeURIComponent(mailNo)}%22`;
     }
-    if (direct.startsWith('http') && !direct.includes('docno:')) return direct;
-    return `https://mea.aconex.com`;
+    if (direct.startsWith('http')) return direct;
+    return `https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878`;
 }
 
 function getAconexDocUrl(item) {
     const direct = String(item?.aconex_url || item?.aconex_doc_url || '');
-    if (direct.includes('/MiniURL?')) return direct;
+    if (direct.includes('MENU_TARGET=DOC-SEARCH')) return direct;
     const rawDocNo = String(item?.document_no || item?.doc_no || item?.item_no || '').replace(/^["']+|["']+$/g, '').trim();
-    if (rawDocNo) return `/api/aconex/doc?doc_no=${encodeURIComponent(rawDocNo)}`;
-    if (direct.startsWith('http') && !direct.includes('docno:') && !direct.includes('trackingid=')) return direct;
-    return `https://mea.aconex.com`;
+    if (rawDocNo) {
+        return `https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=DOC-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=documentNumber%3A%22${encodeURIComponent(rawDocNo)}%22`;
+    }
+    if (direct.startsWith('http') && !direct.includes('ViewDoc') && !direct.includes('trackingid=')) return direct;
+    return `https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=DOC-SEARCH&ENTITY=PROJECT&ID=1744833878`;
 }
 
 function getAconexWorkflowUrl(item) {
     const direct = String(item?.aconex_url || '');
-    if (direct.includes('/ViewDoc?') || direct.includes('/MiniURL?')) return direct;
-    const rawDocNo = String(item?.document_no || '').replace(/^["']+|["']+$/g, '').trim();
-    if (rawDocNo) return `/api/aconex/doc?doc_no=${encodeURIComponent(rawDocNo)}`;
+    if (direct.includes('MENU_TARGET=WORKFLOW-SEARCH')) return direct;
     const wfNo = String(item?.workflow_no || '').trim();
     if (wfNo) {
         return `https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=WORKFLOW-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=workflowNumber%3A${encodeURIComponent(wfNo)}`;
     }
-    return `https://mea.aconex.com`;
+    const rawDocNo = String(item?.document_no || '').replace(/^["']+|["']+$/g, '').trim();
+    if (rawDocNo) {
+        return `https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=DOC-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=documentNumber%3A%22${encodeURIComponent(rawDocNo)}%22`;
+    }
+    return `https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=WORKFLOW-SEARCH&ENTITY=PROJECT&ID=1744833878`;
 }
-
-// Global safety net: any legacy search link containing searchQuery or docno rendered anywhere in the app
-// (discipline portals, daily feed, transmittals, timelines) is rewritten on click
-// to the direct ViewDoc / MiniURL hyperlink with ID via the backend resolver.
-document.addEventListener('click', function (ev) {
-    const a = ev.target && ev.target.closest ? ev.target.closest('a[href]') : null;
-    if (!a) return;
-    const href = a.getAttribute('href') || '';
-    if (!/mea\.aconex\.com/i.test(href)) return;
-
-    // Direct ViewDoc or MiniURL links with IDs are already 100% authoritative!
-    if (href.includes('/ViewDoc?') || href.includes('/MiniURL?')) return;
-
-    const m = href.match(/searchQuery=([^&]+)/i);
-    if (!m) return;
-    let q = '';
-    try { q = decodeURIComponent(m[1].replace(/\+/g, ' ')); } catch (e) { q = m[1]; }
-
-    // Check if it's a doc query
-    const dm = q.match(/(?:docno|documentNo|documentNumber)\s*:\s*"?([^"&]+)"?/i);
-    if (dm && dm[1]) {
-        ev.preventDefault();
-        ev.stopPropagation();
-        window.open(`/api/aconex/doc?doc_no=${encodeURIComponent(dm[1].trim())}`, '_blank', 'noopener');
-        return;
-    }
-
-    // Check if it's a mail/rfi query
-    const mm = q.match(/(?:mailNumber|mail_no|mailNo|id)\s*:\s*"?([^"&]+)"?/i);
-    if (mm && mm[1]) {
-        ev.preventDefault();
-        ev.stopPropagation();
-        window.open(`/api/aconex/mail?mail_no=${encodeURIComponent(mm[1].trim())}`, '_blank', 'noopener');
-        return;
-    }
-}, true);
 
 // Hill & SSC Direct Letters State
 let hsdCurrentDirection = 'all';

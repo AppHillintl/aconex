@@ -142,11 +142,7 @@ def generate_filtered_excel_export(
             rows = con.execute(f"""
                 SELECT document_no, title, discipline_name, doc_type, status, review_status, revision, version_number,
                        date_modified::VARCHAR, 
-                       CASE 
-                           WHEN document_id IS NOT NULL AND LENGTH(TRIM(document_id)) > 3 AND document_id != 'None'
-                           THEN 'https://mea.aconex.com/ViewDoc?trackingid=' || document_id || '&projectid=1744833878&docno=' || document_no || '&username=aabdelrahim4&action=ViewDocumentSummary'
-                           ELSE 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=DOC-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=documentNumber%3A%22' || document_no || '%22'
-                       END as aconex_url
+                       'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=DOC-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=documentNumber%3A%22' || TRIM(BOTH '''' FROM TRIM(BOTH '"' FROM TRIM(document_no))) || '%22' as aconex_url
                 FROM dim_documents
                 {where_sql}
                 ORDER BY {order_by}

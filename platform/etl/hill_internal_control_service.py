@@ -229,11 +229,7 @@ def get_hill_engineer_dossier(engineer_name: str, package_filter: str = None) ->
                 s.date_in::VARCHAR,
                 s.date_due::VARCHAR,
                 'https://mea.aconex.com/WorkflowSearch?searchtext=' || s.workflow_no || '&projectid=1744833878' AS aconex_url,
-                CASE 
-                    WHEN d.document_id IS NOT NULL AND LENGTH(TRIM(d.document_id)) > 3 AND d.document_id != 'None'
-                    THEN 'https://mea.aconex.com/ViewDoc?trackingid=' || d.document_id || '&projectid=1744833878&docno=' || s.document_no || '&username=aabdelrahim4&action=ViewDocumentSummary'
-                    ELSE 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=DOC-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=documentNumber%3A%22' || COALESCE(s.document_no, '') || '%22'
-                END AS doc_aconex_url
+                'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=DOC-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=documentNumber%3A%22' || TRIM(BOTH '''' FROM TRIM(BOTH '"' FROM TRIM(COALESCE(s.document_no, '')))) || '%22' AS doc_aconex_url
             FROM fact_workflow_steps s
             LEFT JOIN fact_workflows w ON s.workflow_no = w.workflow_no
             LEFT JOIN (SELECT document_no, MAX(tracking_id) as document_id, MAX(aconex_url) as doc_direct_url FROM dim_documents GROUP BY document_no) d ON s.document_no = d.document_no
