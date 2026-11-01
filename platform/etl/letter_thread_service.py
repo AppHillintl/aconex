@@ -34,7 +34,7 @@ def get_letter_thread_history(mail_no: str, reference_number: str = None) -> dic
                 m.mail_no, m.mail_type, COALESCE(m.reference_number, m.mail_no) as ref_no,
                 m.subject, m.from_organization, m.to_organization, m.from_name,
                 m.sent_date, m.due_date, m.status, m.project_package,
-                COALESCE(l.aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A' || m.mail_no) as aconex_url
+                COALESCE(l.aconex_url, '/api/aconex/mail?mail_no=' || m.mail_no) as aconex_url
             FROM fact_mail m
             LEFT JOIN mail_aconex_links l ON m.mail_no = l.mail_no
             WHERE m.mail_no = ? OR (m.reference_number = ? AND LENGTH(?) > 5)
@@ -50,7 +50,7 @@ def get_letter_thread_history(mail_no: str, reference_number: str = None) -> dic
             SELECT DISTINCT 
                 m.mail_no, m.mail_type, m.from_organization, m.to_organization, m.from_name,
                 m.sent_date, m.subject, m.status, COALESCE(m.reference_number, m.mail_no) as ref_no,
-                COALESCE(l.aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A' || m.mail_no) as aconex_url
+                COALESCE(l.aconex_url, '/api/aconex/mail?mail_no=' || m.mail_no) as aconex_url
             FROM fact_mail m
             LEFT JOIN mail_aconex_links l ON m.mail_no = l.mail_no
             WHERE m.mail_no = ?

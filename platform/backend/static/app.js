@@ -714,42 +714,42 @@ function formatAppDate(dateStr) {
 // ==========================================
 function getAconexMailUrl(item) {
     const direct = String(item?.aconex_url || '');
-    if (direct.includes('/MiniURL?') || direct.includes('MENU_TARGET=MAIL-SEARCH')) return direct;
+    if (direct.includes('/MiniURL?') || direct.includes('cid=') || direct.includes('mainTarget=')) return direct;
     const cid = item?.correspondence_id || item?.mail_id;
     if (cid && !isNaN(Number(cid))) {
         return `https://mea.aconex.com/MiniURL?type=MAILSEARCH&mailbox=5&pid=1744833878&cid=${cid}`;
     }
     const mailNo = String(item?.mail_no || item?.rfi_no || item?.item_no || '').replace(/^["']+|["']+$/g, '').trim();
     if (mailNo) {
-        return `https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A%22${encodeURIComponent(mailNo)}%22`;
+        return `/api/aconex/mail?mail_no=${encodeURIComponent(mailNo)}`;
     }
     if (direct.startsWith('http')) return direct;
-    return `https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878`;
+    return `https://mea.aconex.com/hub/index.html`;
 }
 
 function getAconexDocUrl(item) {
     const direct = String(item?.aconex_url || item?.aconex_doc_url || '');
-    if (direct.includes('MENU_TARGET=DOC-SEARCH')) return direct;
+    if (direct.includes('mainTarget=')) return direct;
     const rawDocNo = String(item?.document_no || item?.doc_no || item?.item_no || '').replace(/^["']+|["']+$/g, '').trim();
     if (rawDocNo) {
-        return `https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=DOC-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=documentNumber%3A%22${encodeURIComponent(rawDocNo)}%22`;
+        return `/api/aconex/doc?doc_no=${encodeURIComponent(rawDocNo)}`;
     }
-    if (direct.startsWith('http') && !direct.includes('ViewDoc') && !direct.includes('trackingid=')) return direct;
-    return `https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=DOC-SEARCH&ENTITY=PROJECT&ID=1744833878`;
+    if (direct.startsWith('http')) return direct;
+    return `https://mea.aconex.com/hub/index.html`;
 }
 
 function getAconexWorkflowUrl(item) {
     const direct = String(item?.aconex_url || '');
-    if (direct.includes('MENU_TARGET=WORKFLOW-SEARCH')) return direct;
-    const wfNo = String(item?.workflow_no || '').trim();
-    if (wfNo) {
-        return `https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=WORKFLOW-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=workflowNumber%3A${encodeURIComponent(wfNo)}`;
-    }
+    if (direct.includes('mainTarget=')) return direct;
     const rawDocNo = String(item?.document_no || '').replace(/^["']+|["']+$/g, '').trim();
     if (rawDocNo) {
-        return `https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=DOC-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=documentNumber%3A%22${encodeURIComponent(rawDocNo)}%22`;
+        return `/api/aconex/doc?doc_no=${encodeURIComponent(rawDocNo)}`;
     }
-    return `https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=WORKFLOW-SEARCH&ENTITY=PROJECT&ID=1744833878`;
+    const wfNo = String(item?.workflow_no || '').trim();
+    if (wfNo) {
+        return `https://mea.aconex.com/hub/index.html?mainTarget=%2FWorkflowSearch%3Fsearchtext%3D${encodeURIComponent(wfNo)}%26projectid%3D1744833878`;
+    }
+    return `https://mea.aconex.com/hub/index.html`;
 }
 
 // Hill & SSC Direct Letters State
@@ -4354,7 +4354,7 @@ async function openLetterThreadModal(mailNo, refNo = '') {
         steps.forEach((s, idx) => {
             const isTarget = s.mail_no === mailNo;
             const targetRing = isTarget ? 'ring-2 ring-purple-500/80 bg-purple-950/10' : '';
-            const aconexUrl = s.aconex_url || `https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A${encodeURIComponent(s.mail_no)}`;
+            const aconexUrl = s.aconex_url || `/api/aconex/mail?mail_no=${encodeURIComponent(s.mail_no)}`;
             
             html += `
                 <div class="relative pl-12">

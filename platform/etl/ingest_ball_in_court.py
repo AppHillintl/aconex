@@ -310,7 +310,7 @@ def ingest_to_duckdb():
         )
 
         target_no = r['mail_no'] or r['process_ref']
-        url = f"https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A{target_no}"
+        url = f"/api/aconex/mail?mail_no={target_no}"
 
         insert_rows.append((
             r['process_ref'],

@@ -21,13 +21,11 @@ else:
 
 def _to_authoritative_aconex_doc_url(raw_doc_no):
     clean = str(raw_doc_no or "").strip().strip("'").strip('"').strip()
-    q = urllib.parse.quote(f'documentNumber:"{clean}"')
-    return f"https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=DOC-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery={q}"
+    return f"/api/aconex/doc?doc_no={urllib.parse.quote(clean)}"
 
 def _to_authoritative_aconex_mail_url(raw_mail_no):
     clean = str(raw_mail_no or "").strip().strip("'").strip('"').strip()
-    q = urllib.parse.quote(f'mailNumber:"{clean}"')
-    return f"https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery={q}"
+    return f"/api/aconex/mail?mail_no={urllib.parse.quote(clean)}"
 
 def get_db():
     return duckdb.connect(DB_PATH, read_only=True)

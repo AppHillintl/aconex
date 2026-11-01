@@ -229,7 +229,7 @@ def get_hill_engineer_dossier(engineer_name: str, package_filter: str = None) ->
                 s.date_in::VARCHAR,
                 s.date_due::VARCHAR,
                 'https://mea.aconex.com/WorkflowSearch?searchtext=' || s.workflow_no || '&projectid=1744833878' AS aconex_url,
-                'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=DOC-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=documentNumber%3A%22' || TRIM(BOTH '''' FROM TRIM(BOTH '"' FROM TRIM(COALESCE(s.document_no, '')))) || '%22' AS doc_aconex_url
+                '/api/aconex/doc?doc_no=' || TRIM(BOTH '''' FROM TRIM(BOTH '"' FROM TRIM(COALESCE(s.document_no, '')))) || '%22' AS doc_aconex_url
             FROM fact_workflow_steps s
             LEFT JOIN fact_workflows w ON s.workflow_no = w.workflow_no
             LEFT JOIN (SELECT document_no, MAX(tracking_id) as document_id, MAX(aconex_url) as doc_direct_url FROM dim_documents GROUP BY document_no) d ON s.document_no = d.document_no
@@ -282,7 +282,7 @@ def get_hill_engineer_dossier(engineer_name: str, package_filter: str = None) ->
             SELECT 
                 mail_no, mail_type, subject, reference_number, from_organization,
                 recipients, status, sent_date::VARCHAR, due_date::VARCHAR, days_late, project_package,
-                COALESCE(aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A%22' || mail_no || '%22') AS aconex_url
+                COALESCE(aconex_url, '/api/aconex/mail?mail_no=' || mail_no) AS aconex_url
             FROM fact_mail
             {where_mail}
             ORDER BY days_late DESC NULLS LAST, sent_date DESC

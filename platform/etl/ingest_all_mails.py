@@ -89,7 +89,7 @@ def parse_mail_worker(args):
             ref_no = get_cell('Reference Number', 14)
             aconex_url = get_cell('Hyperlink', 21)
             if not aconex_url:
-                aconex_url = f"https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A{mail_no}"
+                aconex_url = f"/api/aconex/mail?mail_no={mail_no}"
                 
             due_idx = col_map.get('Due', 48)
             due_date = parse_date_str(row[due_idx]) if due_idx is not None and due_idx < len(row) else ''

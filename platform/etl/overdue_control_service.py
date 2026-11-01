@@ -420,7 +420,7 @@ def get_project_overdue_report(project_id: str, from_date: Optional[str] = None,
                 s.days_late,
                 'https://mea.aconex.com/WorkflowSearch?searchtext=' || s.workflow_no || '&projectid=1744833878' AS aconex_url,
                 w.workflow_name,
-                'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=DOC-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=documentNumber%3A%22' || TRIM(BOTH '''' FROM TRIM(BOTH '"' FROM TRIM(COALESCE(s.document_no, '')))) || '%22' AS doc_aconex_url
+                '/api/aconex/doc?doc_no=' || TRIM(BOTH '''' FROM TRIM(BOTH '"' FROM TRIM(COALESCE(s.document_no, '')))) || '%22' AS doc_aconex_url
             FROM fact_workflow_steps s
             JOIN fact_workflows w ON s.workflow_no = w.workflow_no
             LEFT JOIN (SELECT document_no, MAX(tracking_id) as document_id, MAX(aconex_url) as doc_direct_url FROM dim_documents GROUP BY document_no) d ON s.document_no = d.document_no
@@ -461,7 +461,7 @@ def get_project_overdue_report(project_id: str, from_date: Optional[str] = None,
                 mail_no, mail_type, subject, reference_number,
                 from_organization, to_organization, from_name,
                 sent_date::VARCHAR, due_date::VARCHAR, days_late,
-                COALESCE(aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A%22' || mail_no || '%22') AS aconex_url
+                COALESCE(aconex_url, '/api/aconex/mail?mail_no=' || mail_no) AS aconex_url
             FROM fact_mail
             WHERE project_package = ?
               AND (is_overdue = true OR days_late > 0)
@@ -495,7 +495,7 @@ def get_project_overdue_report(project_id: str, from_date: Optional[str] = None,
                 r.mail_no, r.subject, COALESCE(m.reference_number, r.mail_no) as ref_no,
                 r.from_organization, r.to_organization, r.from_name,
                 r.sent_date::VARCHAR, r.due_date::VARCHAR, r.days_late,
-                COALESCE(r.aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A%22' || r.mail_no || '%22') AS aconex_url,
+                COALESCE(r.aconex_url, '/api/aconex/mail?mail_no=' || r.mail_no) AS aconex_url,
                 COALESCE(m.mail_type, 'Request For Information') as mail_type,
                 r.project_package
             FROM fact_rfis r
@@ -537,7 +537,7 @@ def get_project_overdue_report(project_id: str, from_date: Optional[str] = None,
                     mail_no, subject, COALESCE(reference_number, mail_no) as ref_no,
                     from_organization, to_organization, from_name,
                     sent_date::VARCHAR, due_date::VARCHAR, days_late,
-                    COALESCE(aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A%22' || mail_no || '%22') AS aconex_url,
+                    COALESCE(aconex_url, '/api/aconex/mail?mail_no=' || mail_no) AS aconex_url,
                     mail_type
                 FROM fact_mail
                 WHERE (project_package = 'DP01' OR subject ILIKE '%MD01%' OR (project_package = 'Aedas Design Packages' AND subject ILIKE '%SCR%'))
@@ -553,7 +553,7 @@ def get_project_overdue_report(project_id: str, from_date: Optional[str] = None,
                     mail_no, subject, COALESCE(reference_number, mail_no) as ref_no,
                     from_organization, to_organization, from_name,
                     sent_date::VARCHAR, due_date::VARCHAR, days_late,
-                    COALESCE(aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A%22' || mail_no || '%22') AS aconex_url,
+                    COALESCE(aconex_url, '/api/aconex/mail?mail_no=' || mail_no) AS aconex_url,
                     mail_type
                 FROM fact_mail
                 WHERE project_package = ?
@@ -1499,7 +1499,7 @@ def get_contractor_rfis_data(
                 r.days_late,
                 r.is_overdue,
                 r.project_package,
-                COALESCE(r.aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A%22' || r.mail_no || '%22') AS aconex_url
+                COALESCE(r.aconex_url, '/api/aconex/mail?mail_no=' || r.mail_no) AS aconex_url
             FROM fact_rfis r
             WHERE {where_sql}
             ORDER BY r.days_late DESC, r.sent_date DESC NULLS LAST
@@ -1588,7 +1588,7 @@ def get_contractor_rfis_data(
                     days_late,
                     is_overdue,
                     'DP01' as project_package,
-                    COALESCE(aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A%22' || mail_no || '%22') AS aconex_url,
+                    COALESCE(aconex_url, '/api/aconex/mail?mail_no=' || mail_no) AS aconex_url,
                     mail_type
                 FROM fact_mail
                 WHERE {' AND '.join(scr_where)}

@@ -283,7 +283,7 @@ def get_feed_items(
                     COALESCE(created_by, '') AS author,
                     COALESCE(status, 'Current') AS status,
                     COALESCE(date_modified, revision_date) AS item_date,
-                    COALESCE(NULLIF(trim(aconex_url), ''), 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=DOC-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=documentNumber%3A%22' || TRIM(BOTH '''' FROM TRIM(BOTH '"' FROM TRIM(document_no))) || '%22') AS aconex_url
+                    COALESCE(NULLIF(trim(aconex_url), ''), '/api/aconex/doc?doc_no=' || TRIM(BOTH '''' FROM TRIM(BOTH '"' FROM TRIM(document_no))) || '%22') AS aconex_url
                 FROM dim_documents
                 WHERE CAST(COALESCE(date_modified, revision_date) AS DATE) >= '{start_date}' 
                   AND CAST(COALESCE(date_modified, revision_date) AS DATE) <= '{end_date}'
@@ -307,7 +307,7 @@ def get_feed_items(
                     CASE 
                         WHEN document_no IS NOT NULL AND trim(document_no) != '' 
                         THEN '/api/aconex/doc?doc_no=' || trim(replace(replace(document_no, '"', ''), '''', ''))
-                        ELSE 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=WORKFLOW-REGISTER&ENTITY=PROJECT&ID=1744833878'
+                        ELSE 'https://mea.aconex.com/hub/index.html?mainTarget=%2FWorkflowSearch%3Fprojectid%3D1744833878'
                     END AS aconex_url
                 FROM fact_workflow_steps
                 WHERE CAST(COALESCE(date_completed, date_in) AS DATE) >= '{start_date}' 

@@ -231,20 +231,35 @@ def aconex_doc_redirect(doc_no: str = Query(""), fallback: str = Query("")):
         try:
             con = get_db()
             try:
-                # In case an RFI or Mail was passed to doc endpoint
+                # 1. Look up directly in dim_documents or doc_direct_links
+                d_row = con.execute("SELECT aconex_url, tracking_id FROM dim_documents WHERE trim(document_no) = ? OR trim(document_no) = ? LIMIT 1", [raw, f"'{raw}"]).fetchone()
+                if not d_row:
+                    d_row = con.execute("SELECT aconex_url, tracking_id FROM doc_direct_links WHERE trim(document_no) = ? OR trim(document_no) = ? LIMIT 1", [raw, f"'{raw}"]).fetchone()
+                
+                if d_row and d_row[0] and ("mainTarget" in d_row[0] or "MiniURL" in d_row[0]):
+                    return _AconexRedirect(url=d_row[0], status_code=302)
+                elif d_row and d_row[1]:
+                    tid = str(d_row[1]).strip()
+                    target = f"https://mea.aconex.com/hub/index.html?mainTarget=%2FViewDoc%3Ftrackingid%3D{tid}%26projectid%3D1744833878%26cversion%3D1%26tab%3D0"
+                    return _AconexRedirect(url=target, status_code=302)
+
+                # 2. In case it was an RFI or Mail passed to doc endpoint
                 m_row = con.execute("SELECT aconex_url FROM fact_mail WHERE mail_no = ? AND aconex_url LIKE '%MiniURL%' LIMIT 1", [raw]).fetchone()
+                if not m_row:
+                    m_row = con.execute("SELECT aconex_url FROM mail_aconex_links WHERE mail_no = ? AND aconex_url LIKE '%MiniURL%' LIMIT 1", [raw]).fetchone()
                 if m_row and m_row[0]:
                     return _AconexRedirect(url=m_row[0], status_code=302)
             finally:
                 con.close()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[aconex_doc_redirect] lookup error: {e}")
         
+        # Fallback to Document Register Search in Hub
         q = urllib.parse.quote(f'documentNumber:"{raw}"')
-        target = f"https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=DOC-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery={q}"
+        target = f"https://mea.aconex.com/hub/index.html?mainTarget=%2FDocSearch%3FsearchQuery%3D{urllib.parse.quote(q)}%26PROJECT_ID%3D1744833878"
         return _AconexRedirect(url=target, status_code=302)
     
-    return _AconexRedirect(url="https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=DOC-SEARCH&ENTITY=PROJECT&ID=1744833878", status_code=302)
+    return _AconexRedirect(url="https://mea.aconex.com/hub/index.html", status_code=302)
 
 
 @app.get("/api/aconex/mail")
@@ -269,7 +284,7 @@ def aconex_mail_redirect(mail_no: str = Query(""), rfi_no: str = Query(""), cid:
                     candidates.append(base)
 
                 for cand in candidates:
-                    # 1. Check fact_rfis for direct MiniURL with ID
+                    # 1. Check fact_rfis, mail_aconex_links, fact_mail for direct MiniURL
                     row = con.execute(
                         "SELECT aconex_url FROM fact_rfis WHERE mail_no = ? AND aconex_url LIKE '%MiniURL%' LIMIT 1", [cand]
                     ).fetchone()
@@ -281,34 +296,20 @@ def aconex_mail_redirect(mail_no: str = Query(""), rfi_no: str = Query(""), cid:
                         row = con.execute(
                             "SELECT aconex_url FROM fact_mail WHERE mail_no = ? AND aconex_url LIKE '%MiniURL%' LIMIT 1", [cand]
                         ).fetchone()
+                    if not row or not row[0]:
+                        row = con.execute(
+                            "SELECT aconex_url FROM fact_ball_in_court_processes WHERE (mail_no = ? OR process_ref = ?) AND (aconex_url LIKE '%MiniURL%' OR aconex_url LIKE '%ViewCorrespondence%') LIMIT 1", [cand, cand]
+                        ).fetchone()
                     if row and row[0]:
                         url = row[0]
                         break
 
-                # 2. If not found in mail, check if it was actually a document (e.g. attachment / BOQ)
+                # 2. Check if it was actually a document
                 if not url:
                     for cand in candidates:
                         row = con.execute(
-                            "SELECT aconex_url FROM doc_direct_links WHERE document_no = ? LIMIT 1", [cand]
+                            "SELECT aconex_url FROM dim_documents WHERE trim(document_no) = ? OR trim(document_no) = ? LIMIT 1", [cand, f"'{cand}"]
                         ).fetchone()
-                        if not row or not row[0]:
-                            row = con.execute(
-                                "SELECT aconex_url FROM dim_documents WHERE trim(document_no) = ? AND aconex_url IS NOT NULL AND aconex_url != '' LIMIT 1", [cand]
-                            ).fetchone()
-                        if row and row[0]:
-                            url = row[0]
-                            break
-
-                # 3. Check any remaining aconex_url in fact_rfis or fact_mail
-                if not url:
-                    for cand in candidates:
-                        row = con.execute(
-                            "SELECT aconex_url FROM fact_rfis WHERE mail_no = ? AND aconex_url IS NOT NULL AND aconex_url != '' LIMIT 1", [cand]
-                        ).fetchone()
-                        if not row or not row[0]:
-                            row = con.execute(
-                                "SELECT aconex_url FROM fact_mail WHERE mail_no = ? AND aconex_url IS NOT NULL AND aconex_url != '' LIMIT 1", [cand]
-                            ).fetchone()
                         if row and row[0]:
                             url = row[0]
                             break
@@ -322,9 +323,9 @@ def aconex_mail_redirect(mail_no: str = Query(""), rfi_no: str = Query(""), cid:
             url = fallback
         elif raw:
             q = urllib.parse.quote(f'mailNumber:"{raw}"')
-            url = f"https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery={q}"
+            url = f"https://mea.aconex.com/hub/index.html?mainTarget=%2FMailSearch%3FsearchQuery%3D{urllib.parse.quote(q)}%26PROJECT_ID%3D1744833878"
         else:
-            url = "https://mea.aconex.com"
+            url = "https://mea.aconex.com/hub/index.html"
     return _AconexRedirect(url=url, status_code=302)
 
 # -----------------------------------------------------------------------------
@@ -3133,7 +3134,7 @@ def get_project_documents(
                 d.document_no, d.title, d.doc_type, d.status, d.review_status,
                 d.revision, d.version_number, d.created_by, d.discipline_name,
                 d.date_modified::VARCHAR,
-                COALESCE(d.aconex_url, l.aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=DOC-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=documentNumber%3A' || d.document_no) AS aconex_url
+                COALESCE(d.aconex_url, l.aconex_url, '/api/aconex/doc?doc_no=' || d.document_no) AS aconex_url
             FROM dim_documents d
             LEFT JOIN doc_aconex_links l ON d.document_no = l.document_no
             {where}

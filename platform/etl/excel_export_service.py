@@ -142,7 +142,7 @@ def generate_filtered_excel_export(
             rows = con.execute(f"""
                 SELECT document_no, title, discipline_name, doc_type, status, review_status, revision, version_number,
                        date_modified::VARCHAR, 
-                       'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=DOC-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=documentNumber%3A%22' || TRIM(BOTH '''' FROM TRIM(BOTH '"' FROM TRIM(document_no))) || '%22' as aconex_url
+                       '/api/aconex/doc?doc_no=' || TRIM(BOTH '''' FROM TRIM(BOTH '"' FROM TRIM(document_no))) || '%22' as aconex_url
                 FROM dim_documents
                 {where_sql}
                 ORDER BY {order_by}
@@ -247,7 +247,7 @@ def generate_filtered_excel_export(
                        COALESCE(
                            CASE WHEN m.aconex_url LIKE '%MiniURL%' THEN m.aconex_url END,
                            CASE WHEN l.aconex_url LIKE '%MiniURL%' THEN l.aconex_url END,
-                           'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A%22' || m.mail_no || '%22'
+                           '/api/aconex/mail?mail_no=' || m.mail_no
                        ) as aconex_url
                 FROM fact_mail m
                 LEFT JOIN mail_aconex_links l ON m.mail_no = l.mail_no
@@ -292,7 +292,7 @@ def generate_filtered_excel_export(
                            COALESCE(
                                CASE WHEN m.aconex_url LIKE '%MiniURL%' THEN m.aconex_url END,
                                CASE WHEN l.aconex_url LIKE '%MiniURL%' THEN l.aconex_url END,
-                               'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A%22' || m.mail_no || '%22'
+                               '/api/aconex/mail?mail_no=' || m.mail_no
                            ) as aconex_url
                     FROM fact_mail m
                     LEFT JOIN mail_aconex_links l ON m.mail_no = l.mail_no
@@ -340,7 +340,7 @@ def generate_filtered_excel_export(
                            COALESCE(
                                CASE WHEN r.aconex_url LIKE '%MiniURL%' THEN r.aconex_url END,
                                CASE WHEN l.aconex_url LIKE '%MiniURL%' THEN l.aconex_url END,
-                               'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A%22' || r.mail_no || '%22'
+                               '/api/aconex/mail?mail_no=' || r.mail_no
                            ) as aconex_url
                     FROM fact_rfis r
                     LEFT JOIN mail_aconex_links l ON r.mail_no = l.mail_no

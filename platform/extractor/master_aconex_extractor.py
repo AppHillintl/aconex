@@ -180,6 +180,11 @@ def clear_aconex_temporary_files(page):
             log.info("[CLEANUP SUCCESS] Successfully purged old Temporary Files from Aconex backend!")
         else:
             log.info("Aconex Temporary Files is already clean (0 files).")
+        try:
+            page.goto("https://mea.aconex.com/hub/index.html", wait_until="commit", timeout=15000)
+            time.sleep(2)
+        except Exception:
+            pass
         return True
     except Exception as e:
         log.warning(f"Error during Aconex Temporary Files purge: {e}")
@@ -706,6 +711,15 @@ def download_mail_files_from_temp(page, output_dir=config.OUTPUT_DIR):
         except Exception as e:
             log.warning(f"Error downloading row {row_idx}: {e}")
 
+    try:
+        if search_inp and search_inp.count() > 0:
+            search_inp.fill("")
+            time.sleep(1)
+        page.goto("https://mea.aconex.com/hub/index.html", wait_until="commit", timeout=15000)
+        time.sleep(2)
+    except Exception as e:
+        log.warning(f"Notice navigating to home hub: {e}")
+
     ready_local = glob.glob(os.path.join(output_dir, "ExportMailAll-*.xlsx"))
     log.info(f"Local ExportMailAll files now on disk: {len(ready_local)}")
     return len(ready_local)
@@ -991,6 +1005,11 @@ def run_master_pipeline(mode="full", phase="all"):
             count_local_export_docs(config.OUTPUT_DIR)
             clear_aconex_temporary_files(page)
 
+        try:
+            page.goto("https://mea.aconex.com/hub/index.html", wait_until="commit", timeout=15000)
+            time.sleep(2)
+        except Exception:
+            pass
         ctx.close()
         
     cleanup_screenshots_and_temp()

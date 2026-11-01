@@ -290,7 +290,7 @@ def handle_rfi_query(con, q: str, pkg: str | None, since_date: str, is_overdue: 
         SELECT 
             mail_no, subject, from_organization, to_organization, 
             sent_date::VARCHAR, due_date::VARCHAR, days_late, is_overdue, 
-            COALESCE(aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A' || mail_no) AS aconex_url,
+            COALESCE(aconex_url, '/api/aconex/mail?mail_no=' || mail_no) AS aconex_url,
             project_package
         FROM fact_rfis
         WHERE sent_date >= ?
@@ -396,7 +396,7 @@ def handle_scr_query(con, q: str, pkg: str, since_date: str, is_overdue: bool, i
         SELECT 
             mail_no, subject, from_organization, to_organization, 
             sent_date::VARCHAR, due_date::VARCHAR, days_late, is_overdue, 
-            COALESCE(aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A' || mail_no) AS aconex_url,
+            COALESCE(aconex_url, '/api/aconex/mail?mail_no=' || mail_no) AS aconex_url,
             COALESCE(reference_number, mail_no) AS ref_no
         FROM fact_mail
         WHERE (project_package = 'DP01' OR subject ILIKE '%MD01%')
@@ -568,7 +568,7 @@ def handle_letter_query(con, q: str, pkg: str | None, since_date: str, is_overdu
             mail_no, mail_type, subject, reference_number,
             from_organization, to_organization, sent_date::VARCHAR, due_date::VARCHAR,
             days_late, is_overdue,
-            COALESCE(aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A' || mail_no) AS aconex_url,
+            COALESCE(aconex_url, '/api/aconex/mail?mail_no=' || mail_no) AS aconex_url,
             project_package
         FROM fact_mail
         WHERE sent_date >= ?

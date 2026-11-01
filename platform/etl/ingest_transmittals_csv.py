@@ -162,8 +162,8 @@ def run_ingest():
             pkg = resolve_pkg(document_no, created_by, title)
             disc = resolve_discipline(raw_discipline, document_no, title, doc_type)
 
-            doc_url = f"https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=DOC-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=documentNo%3A{document_no}" if document_no else ""
-            trans_url = f"https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A{transmittal_no}" if transmittal_no and transmittal_no != "N/A" else ""
+            doc_url = f"/api/aconex/doc?doc_no={document_no}" if document_no else ""
+            trans_url = f"/api/aconex/mail?mail_no={transmittal_no}" if transmittal_no and transmittal_no != "N/A" else ""
 
             batch.append((
                 pkg,

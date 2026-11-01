@@ -1,0 +1,5 @@
+{
+  "micro_batch_enabled": true,
+  "micro_batch_interval_mins": 30,
+  "daily_sync_time": "08:00"
+}

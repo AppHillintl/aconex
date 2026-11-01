@@ -1,0 +1,259 @@
+{
+  "ssc_remind_emails": {
+    "DP01": {
+      "project_name": "DP01 - Area 1 Basement & Superstructure",
+      "to": [
+        "Ahmed-Tawfik@shakeregypt.com"
+      ],
+      "cc": [
+        "DeanEnglish@hillintl.com"
+      ],
+      "notes": "Zone DC: Ahmed Tawfik / Khaled Moawad (Shaker-ECG)"
+    },
+    "DP02": {
+      "project_name": "DP02 - Area 2 Basement & Superstructure",
+      "to": [
+        "mohamed.wageh@ecgsa.com",
+        "Ahmed-Tawfik@shakeregypt.com"
+      ],
+      "cc": [
+        "Khaled-Moawad@shakeregypt.com",
+        "Moataz-Abdelraouf@shakeregypt.com",
+        "DeanEnglish@hillintl.com",
+        "HossameldinSwaify@hillintl.com",
+        "MohamedEweis@hillintl.com"
+      ],
+      "notes": "Zone DC: Mohamed Wageh (ECG lead)"
+    },
+    "DP03-East": {
+      "project_name": "DP03 East - Buildings & Infrastructure",
+      "to": [
+        "mohamed.wageh@ecgsa.com",
+        "Ahmed-Tawfik@shakeregypt.com"
+      ],
+      "cc": [
+        "Khaled-Moawad@shakeregypt.com",
+        "Moataz-Abdelraouf@shakeregypt.com",
+        "DeanEnglish@hillintl.com",
+        "HossameldinSwaify@hillintl.com",
+        "MohamedEweis@hillintl.com"
+      ],
+      "notes": "Zone DC: Mohamed Wageh (ECG)"
+    },
+    "DP03-West": {
+      "project_name": "DP03 West - Buildings & Infrastructure",
+      "to": [
+        "mohamed.wageh@ecgsa.com",
+        "Ahmed-Tawfik@shakeregypt.com"
+      ],
+      "cc": [
+        "Khaled-Moawad@shakeregypt.com",
+        "Moataz-Abdelraouf@shakeregypt.com",
+        "DeanEnglish@hillintl.com",
+        "HossameldinSwaify@hillintl.com",
+        "MohamedEweis@hillintl.com"
+      ],
+      "notes": "Zone DC: Mohamed Wageh (ECG)"
+    },
+    "DP04": {
+      "project_name": "DP04 - Buildings & Infrastructure",
+      "to": [
+        "mohamed.wageh@ecgsa.com",
+        "Ahmed-Tawfik@shakeregypt.com"
+      ],
+      "cc": [
+        "Khaled-Moawad@shakeregypt.com",
+        "DeanEnglish@hillintl.com",
+        "HossameldinSwaify@hillintl.com"
+      ],
+      "notes": "Zone DC: Mohamed Wageh (ECG)"
+    },
+    "DP05": {
+      "project_name": "DP05 - Buildings & Infrastructure",
+      "to": [
+        "Ahmed-Tawfik@shakeregypt.com",
+        "Khaled-Moawad@shakeregypt.com"
+      ],
+      "cc": [
+        "Moataz-Abdelraouf@shakeregypt.com",
+        "DeanEnglish@hillintl.com",
+        "HossameldinSwaify@hillintl.com"
+      ],
+      "notes": "Zone DC: Shaker Lead"
+    },
+    "DP06": {
+      "project_name": "DP06 - Buildings & Infrastructure",
+      "to": [
+        "Ahmed-Tawfik@shakeregypt.com",
+        "Khaled-Moawad@shakeregypt.com"
+      ],
+      "cc": [
+        "Moataz-Abdelraouf@shakeregypt.com",
+        "DeanEnglish@hillintl.com",
+        "HossameldinSwaify@hillintl.com"
+      ],
+      "notes": "Zone DC: Shaker Lead"
+    },
+    "DP07": {
+      "project_name": "DP07 - Buildings & Infrastructure",
+      "to": [
+        "Ahmed-Tawfik@shakeregypt.com",
+        "Khaled-Moawad@shakeregypt.com"
+      ],
+      "cc": [
+        "Moataz-Abdelraouf@shakeregypt.com",
+        "DeanEnglish@hillintl.com",
+        "HossameldinSwaify@hillintl.com"
+      ],
+      "notes": "Zone DC: Shaker Lead"
+    },
+    "Grand Canal": {
+      "project_name": "Grand Canal & Lagoon Excavation",
+      "to": [
+        "mohamed.wageh@ecgsa.com",
+        "Ahmed-Tawfik@shakeregypt.com"
+      ],
+      "cc": [
+        "DeanEnglish@hillintl.com",
+        "HossameldinSwaify@hillintl.com"
+      ],
+      "notes": "Canals & Marine Infrastructure"
+    },
+    "Airport": {
+      "project_name": "VVIP Airport & Airside Development",
+      "to": [
+        "mohamed.wageh@ecgsa.com",
+        "Ahmed-Tawfik@shakeregypt.com"
+      ],
+      "cc": [
+        "DeanEnglish@hillintl.com",
+        "HossameldinSwaify@hillintl.com"
+      ],
+      "notes": "Airport Package SSC Supervision"
+    },
+    "Infra": {
+      "project_name": "Primary Infrastructure & Utility",
+      "to": [
+        "mohamed.wageh@ecgsa.com",
+        "Ahmed-Tawfik@shakeregypt.com"
+      ],
+      "cc": [
+        "DeanEnglish@hillintl.com",
+        "HossameldinSwaify@hillintl.com"
+      ],
+      "notes": "Primary Utilities Infrastructure"
+    }
+  },
+  "rfi_remind_emails": [
+    {
+      "id": "rfi_dp03w_dar",
+      "project": "DP03-West",
+      "company": "DAR AL HANDASAH",
+      "to": [
+        "rfi.dar@dargroup.com",
+        "ahmed.dar@dargroup.com"
+      ],
+      "cc": [
+        "DeanEnglish@hillintl.com",
+        "MohamedEweis@hillintl.com",
+        "HossameldinSwaify@hillintl.com"
+      ],
+      "notes": "DP03-West Detailed Design Engineering determinations"
+    },
+    {
+      "id": "rfi_dp01_aedas",
+      "project": "DP01",
+      "company": "Aedas Limited",
+      "to": [
+        "aedas.raselhekma@aedas.com",
+        "clarifications@aedas.com"
+      ],
+      "cc": [
+        "DeanEnglish@hillintl.com",
+        "MohamedEweis@hillintl.com"
+      ],
+      "notes": "DP01 Architectural Concept & Detail Clarifications"
+    },
+    {
+      "id": "rfi_dp02_dewan",
+      "project": "DP02",
+      "company": "Dewan Architects and Engineers",
+      "to": [
+        "dewan.reh@dewan-architects.com"
+      ],
+      "cc": [
+        "DeanEnglish@hillintl.com",
+        "MohamedEweis@hillintl.com"
+      ],
+      "notes": "DP02 Architecture & Engineering queries"
+    },
+    {
+      "id": "rfi_all_hill",
+      "project": "All Packages",
+      "company": "Hill Inter",
+      "to": [
+        "DeanEnglish@hillintl.com",
+        "HossameldinSwaify@hillintl.com"
+      ],
+      "cc": [
+        "MohamedEweis@hillintl.com"
+      ],
+      "notes": "PMC Project Controls & Engineering Management"
+    },
+    {
+      "id": "rfi_all_shaker_ecg",
+      "project": "All Packages",
+      "company": "Shaker-ECG consortium RASELHEKMA",
+      "to": [
+        "Ahmed-Tawfik@shakeregypt.com",
+        "mohamed.wageh@ecgsa.com"
+      ],
+      "cc": [
+        "Moataz-Abdelraouf@shakeregypt.com",
+        "DeanEnglish@hillintl.com"
+      ],
+      "notes": "Site Clarifications & Supervision Engineering"
+    },
+    {
+      "id": "rfi_all_egis",
+      "project": "All Packages",
+      "company": "EGIS Middle-East",
+      "to": [
+        "egis.reh@egis-group.com"
+      ],
+      "cc": [
+        "DeanEnglish@hillintl.com"
+      ],
+      "notes": "Infrastructure & Technical Consultancy"
+    },
+    {
+      "id": "rfi_all_rhdhv",
+      "project": "All Packages",
+      "company": "Royal HaskoningDHV",
+      "to": [
+        "marine.reh@rhdhv.com"
+      ],
+      "cc": [
+        "DeanEnglish@hillintl.com"
+      ],
+      "notes": "Marine & Coastal Works Design Clarifications"
+    },
+    {
+      "id": "rfi_all_naco",
+      "project": "Airport",
+      "company": "NACO",
+      "to": [
+        "airport.design@naco.rhdhv.com"
+      ],
+      "cc": [
+        "DeanEnglish@hillintl.com"
+      ],
+      "notes": "Airport Aviation Design Queries"
+    }
+  ],
+  "gemini_config": {
+    "api_key": "",
+    "model": "gemini-3-flash-preview",
+    "enabled": true
+  }
+}

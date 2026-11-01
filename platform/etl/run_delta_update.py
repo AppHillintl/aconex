@@ -86,7 +86,7 @@ def update_ball_in_court(con):
                 contr = safe_cell(row, col_map.get("Contractor", 12))
                 
                 is_ov = (p_stat == "Overdue" or m_stat == "Overdue" or delay > 0 or ov_days > 0)
-                url = f"https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A{mail_no or p_ref}"
+                url = f"/api/aconex/mail?mail_no={mail_no or p_ref}"
                 
                 all_rows.append((
                     p_ref, init_on, p_stat, dur, delay, act, m_stat, bic, action, ov_days,

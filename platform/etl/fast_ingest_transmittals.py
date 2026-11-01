@@ -133,8 +133,8 @@ def fast_ingest():
         r.created_by,
         r.date_created,
         r.date_modified,
-        'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=DOC-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=documentNo%3A' || r.document_no AS aconex_doc_url,
-        'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A' || COALESCE(NULLIF(r.transmitted_mail_no, ''), NULLIF(r.transmittal_in_mail_no, ''), 'N/A') AS aconex_transmittal_url
+        '/api/aconex/doc?doc_no=' || r.document_no AS aconex_doc_url,
+        '/api/aconex/mail?mail_no=' || COALESCE(NULLIF(r.transmitted_mail_no, ''), NULLIF(r.transmittal_in_mail_no, ''), 'N/A') AS aconex_transmittal_url
     FROM raw_csv r
     LEFT JOIN doc_pkg d ON r.document_no = d.document_no
     """)

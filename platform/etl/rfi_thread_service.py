@@ -158,7 +158,7 @@ def get_rfi_thread_history(mail_no: str, reference_number: str = None) -> dict:
                 m.mail_no, m.mail_type, COALESCE(m.reference_number, m.mail_no) as ref_no,
                 m.subject, m.from_organization, m.to_organization, m.from_name,
                 m.sent_date, m.due_date, m.status, m.project_package,
-                COALESCE(l.aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A' || m.mail_no) as aconex_url
+                COALESCE(l.aconex_url, '/api/aconex/mail?mail_no=' || m.mail_no) as aconex_url
             FROM fact_mail m
             LEFT JOIN mail_aconex_links l ON m.mail_no = l.mail_no
             WHERE m.mail_no = ? OR (m.reference_number = ? AND LENGTH(?) > 5)
@@ -172,7 +172,7 @@ def get_rfi_thread_history(mail_no: str, reference_number: str = None) -> dict:
                     mail_no, 'Request For Information' as mail_type, mail_no as ref_no,
                     subject, from_organization, to_organization, from_name,
                     sent_date, due_date, status, project_package,
-                    COALESCE(aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A' || mail_no) as aconex_url
+                    COALESCE(aconex_url, '/api/aconex/mail?mail_no=' || mail_no) as aconex_url
                 FROM fact_rfis
                 WHERE mail_no = ?
                 LIMIT 1
@@ -214,7 +214,7 @@ def get_rfi_thread_history(mail_no: str, reference_number: str = None) -> dict:
             SELECT DISTINCT 
                 m.mail_no, m.mail_type, m.from_organization, m.to_organization, m.from_name,
                 m.sent_date, m.subject, m.status,
-                COALESCE(l.aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A' || m.mail_no) as aconex_url
+                COALESCE(l.aconex_url, '/api/aconex/mail?mail_no=' || m.mail_no) as aconex_url
             FROM fact_mail m
             LEFT JOIN mail_aconex_links l ON m.mail_no = l.mail_no
             WHERE ({where_clause}) AND m.mail_type != 'Workflow Transmittal'
@@ -442,7 +442,7 @@ def get_project_rfis_explorer_list(project_id: str = "DP02", search: str = None,
                 m.due_date,
                 m.status,
                 m.days_late,
-                COALESCE(l.aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A' || m.mail_no) as aconex_url
+                COALESCE(l.aconex_url, '/api/aconex/mail?mail_no=' || m.mail_no) as aconex_url
             FROM fact_mail m
             LEFT JOIN mail_aconex_links l ON m.mail_no = l.mail_no
             WHERE {where_sql}
@@ -613,7 +613,7 @@ def update_rfi_workbook_bytes(file_bytes: bytes, filename: str = "", override_pk
             SELECT 
                 m.mail_no, COALESCE(m.reference_number, m.mail_no) as ref_no,
                 m.subject, m.sent_date,
-                COALESCE(l.aconex_url, 'https://mea.aconex.com/authentication/index.html?Action=View&MENU_TARGET=MAIL-SEARCH&ENTITY=PROJECT&ID=1744833878&searchQuery=mailNumber%3A' || m.mail_no) as aconex_url
+                COALESCE(l.aconex_url, '/api/aconex/mail?mail_no=' || m.mail_no) as aconex_url
             FROM fact_mail m
             LEFT JOIN mail_aconex_links l ON m.mail_no = l.mail_no
             WHERE (m.mail_type ILIKE '%Request For Information%' OR m.mail_no LIKE '%-RFI-%')
