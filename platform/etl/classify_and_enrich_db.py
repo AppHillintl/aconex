@@ -64,6 +64,37 @@ def run_enrichment():
             print(f"Added column {col} to {table}")
 
     print("\n--- 2. Enriching fact_workflows (Exact Contract & Logics Hierarchy) ---")
+    # Load / Refresh map_workflow_template_project from Templete.xlsx if available
+    try:
+        import openpyxl, re
+        tpl_path = r"C:\Users\bimst\Downloads\ACONEX\Data\database\Templete.xlsx"
+        if os.path.exists(tpl_path):
+            wb = openpyxl.load_workbook(tpl_path, data_only=True)
+            sheet = wb.active
+            pkg_norm = {
+                'DP01': 'DP01', 'DP02': 'DP02', 'DP03 East': 'DP03-East', 'DP03 West': 'DP03-West',
+                'DP4': 'DP04', 'DP04': 'DP04', 'DP5': 'DP05', 'DP6': 'DP06', 'DP7': 'DP07',
+                'Infra': 'Infra', 'RO': 'RO Plant', 'STP': 'STP', 'West Canal': 'West Canal',
+                'Grand Canal': 'Grand Canal', 'Air Port': 'Airport', 'MSS': 'MMS / Substation'
+            }
+            con.execute("CREATE OR REPLACE TABLE map_workflow_template_project (template_name VARCHAR, norm_template VARCHAR, contract_number VARCHAR, contractor VARCHAR, source_project VARCHAR, canonical_package VARCHAR);")
+            rows = []
+            for row in sheet.iter_rows(min_row=2, values_only=True):
+                if row and row[0]:
+                    raw_tpl = str(row[0]).strip()
+                    s_norm = re.sub(r'[\s\.\-]+', ' ', re.sub(r'\s+rev\s*\d+', '', raw_tpl.lower())).strip()
+                    c_proj = pkg_norm.get(str(row[3]).strip() if row[3] else '', str(row[3]).strip() if row[3] else '')
+                    rows.append((raw_tpl, s_norm, str(row[1] or ''), str(row[2] or ''), str(row[3] or ''), c_proj))
+            con.executemany("INSERT INTO map_workflow_template_project VALUES (?, ?, ?, ?, ?, ?)", rows)
+            con.execute("""
+                UPDATE fact_workflows
+                SET project_package = m.canonical_package
+                FROM map_workflow_template_project m
+                WHERE fact_workflows.template = m.template_name AND m.canonical_package IS NOT NULL AND m.canonical_package != '';
+            """)
+            print(f"Loaded {len(rows)} template mappings from Templete.xlsx.")
+    except Exception as e:
+        print(f"Template loading notice: {e}")
     add_col_if_missing("fact_workflows", "project_package", "VARCHAR")
     add_col_if_missing("fact_workflows", "project_category", "VARCHAR")
 

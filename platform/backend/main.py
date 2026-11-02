@@ -70,6 +70,8 @@ import rfi_thread_service as rts
 import letter_thread_service as lts
 import excel_export_service as ees
 import overdue_control_service as ocs
+import egis_control_service as ecs
+
 import hill_internal_control_service as hcs
 import ai_chat_service as acs
 import dispatch_settings_service as dss
@@ -142,6 +144,7 @@ async def hill_corporate_auth_middleware(request: Request, call_next):
         "/api/auth/reset-password",
         "/api/auth/verify-admin",
         "/api/auth/check-admin",
+        "/api/database/cutoff",
         "/api/sync/cloud-push",
         "/api/aconex/doc",
         "/api/aconex/mail",
@@ -232,9 +235,9 @@ def aconex_doc_redirect(doc_no: str = Query(""), fallback: str = Query("")):
             con = get_db()
             try:
                 # 1. Look up directly in dim_documents or doc_direct_links
-                d_row = con.execute("SELECT aconex_url, tracking_id FROM dim_documents WHERE trim(replace(document_no, '\'', '')) = ? LIMIT 1", [raw]).fetchone()
+                d_row = con.execute("SELECT aconex_url, tracking_id FROM dim_documents WHERE trim(replace(document_no, chr(39), '')) = ? LIMIT 1", [raw]).fetchone()
                 if not d_row:
-                    d_row = con.execute("SELECT aconex_url, tracking_id FROM doc_direct_links WHERE trim(replace(document_no, '\'', '')) = ? LIMIT 1", [raw]).fetchone()
+                    d_row = con.execute("SELECT aconex_url, tracking_id FROM doc_direct_links WHERE trim(replace(document_no, chr(39), '')) = ? LIMIT 1", [raw]).fetchone()
                 
                 if d_row and d_row[1]:
                     tid = str(d_row[1]).strip()
@@ -3723,7 +3726,7 @@ def get_project_workflows(
                 COALESCE(w.current_assigned_user, (SELECT assigned_to_name FROM fact_workflow_steps s WHERE s.workflow_no = w.workflow_no AND s.step_status IN ('Overdue', 'Current') LIMIT 1)) AS current_assigned_user,
                 COALESCE(w.current_step_name, (SELECT step_name FROM fact_workflow_steps s WHERE s.workflow_no = w.workflow_no AND s.step_status IN ('Overdue', 'Current') LIMIT 1)) AS current_step_name,
                 (SELECT step_status FROM fact_workflow_steps s WHERE s.workflow_no = w.workflow_no AND s.step_status IN ('Overdue', 'Current') LIMIT 1) AS cur_step_status,
-                'https://mea.aconex.com/WorkflowSearch?searchtext=' || w.workflow_no || '&projectid=1744833878' AS aconex_url
+                '/api/aconex/doc?doc_no=' || replace(w.document_no, chr(39), '') AS aconex_url
             FROM fact_workflows w
             LEFT JOIN step_agg sa ON w.workflow_no = sa.workflow_no
             {where}
@@ -5725,35 +5728,6 @@ def get_all_refresh_tickets_api():
     return {"status": "success", "tickets": rrs.get_all_tickets()}
 
 
-if __name__ == "__main__":
-    import uvicorn
-    import socket
-    import sys
-
-    port = 8000
-    for arg in sys.argv[1:]:
-        if arg.isdigit():
-            port = int(arg)
-        elif arg.startswith("--port="):
-            port = int(arg.split("=")[1])
-
-    mode = "DEVELOPMENT (Isolated Staging)" if port != 8000 else "PRODUCTION"
-
-    lan_ip = "127.0.0.1"
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        lan_ip = s.getsockname()[0]
-        s.close()
-    except Exception:
-        pass
-    print("================================================================")
-    print(f"  ACONEX PMC Control Hub - Ras El Hekma [{mode}]")
-    print(f"  Local Access:   http://localhost:{port}")
-    if port == 8000:
-        print(f"  Network Access: http://{lan_ip}:{port}")
-    print("================================================================")
-    uvicorn.run(app, host="0.0.0.0", port=port)
 
 
 @app.post("/api/sync/cloud-push")
@@ -5824,3 +5798,63 @@ async def sync_cloud_push_api(
             except Exception:
                 pass
         raise HTTPException(status_code=500, detail=f"Cloud sync failed: {str(e)}")
+
+# -----------------------------------------------------------------------------
+# EGIS Review for Consultants API
+# -----------------------------------------------------------------------------
+@app.get("/api/controls/egis_review")
+def get_egis_review_api(package: str = Query(None)):
+    """Returns technical submittals and review workflow steps currently assigned to EGIS consultants."""
+    return ecs.get_egis_review_summary(package_filter=package)
+
+@app.get("/api/controls/egis_review/download_eml")
+def download_egis_eml_api(package: str = Query(None)):
+    """Generates an Outlook-compatible .eml reminder draft pre-attached with personalized Excel register for EGIS."""
+    eml_bytes, filename = ecs.generate_egis_eml(package_filter=package)
+    return Response(
+        content=eml_bytes,
+        media_type="message/rfc822",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+@app.get("/api/controls/egis_review/export_excel")
+def export_egis_excel_api(package: str = Query(None)):
+    """Generates an executive, professionally styled Excel register for EGIS consultant deliverables."""
+    excel_bytes = ecs.generate_egis_excel(package_filter=package)
+    filename = f"EGIS_Review_Register_{datetime.now().strftime('%Y%m%d')}.xlsx"
+    return Response(
+        content=excel_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+
+if __name__ == "__main__":
+    import uvicorn
+    import socket
+    import sys
+
+    port = 8000
+    for arg in sys.argv[1:]:
+        if arg.isdigit():
+            port = int(arg)
+        elif arg.startswith("--port="):
+            port = int(arg.split("=")[1])
+
+    mode = "DEVELOPMENT (Isolated Staging)" if port != 8000 else "PRODUCTION"
+
+    lan_ip = "127.0.0.1"
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        lan_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        pass
+    print("================================================================")
+    print(f"  ACONEX PMC Control Hub - Ras El Hekma [{mode}]")
+    print(f"  Local Access:   http://localhost:{port}")
+    if port == 8000:
+        print(f"  Network Access: http://{lan_ip}:{port}")
+    print("================================================================")
+    uvicorn.run(app, host="0.0.0.0", port=port)

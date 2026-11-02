@@ -407,33 +407,39 @@ def get_project_overdue_report(project_id: str, from_date: Optional[str] = None,
         # 2. Resolve Contacts
         to_emails, cc_emails = resolve_project_contacts(pid, k_code or "", title or "")
 
-        # 3. Overdue Workflows (Focusing on Shaker-ECG when present)
+        # 3. Overdue Workflows (Grouped by Workflow No. to show distinct deliverables, matching Aconex)
         wf_steps = con.execute("""
             SELECT 
                 s.workflow_no,
-                s.step_name,
-                s.document_no,
-                s.document_title,
-                s.assigned_to_organization,
-                s.assigned_to_name,
-                s.date_due::VARCHAR,
-                s.days_late,
-                'https://mea.aconex.com/WorkflowSearch?searchtext=' || s.workflow_no || '&projectid=1744833878' AS aconex_url,
-                w.workflow_name,
-                '/api/aconex/doc?doc_no=' || TRIM(BOTH '''' FROM TRIM(BOTH '"' FROM TRIM(COALESCE(s.document_no, '')))) || '%22' AS doc_aconex_url
+                FIRST(s.step_name) AS step_name,
+                FIRST(s.document_no) AS document_no,
+                FIRST(s.document_title) AS document_title,
+                FIRST(s.assigned_to_organization) AS assigned_to_organization,
+                STRING_AGG(DISTINCT s.assigned_to_name, ', ') AS assigned_to_name,
+                MIN(s.date_due)::VARCHAR AS date_due,
+                MAX(s.days_late) AS days_late,
+                FIRST(COALESCE(
+                    CASE WHEN d.document_id IS NOT NULL THEN 'https://mea.aconex.com/ViewDoc?trackingid=' || d.document_id || '&projectid=1744833878' END,
+                    d.doc_direct_url,
+                    '/api/aconex/doc?doc_no=' || replace(s.document_no, chr(39), '')
+                )) AS aconex_url,
+                FIRST(w.workflow_name) AS workflow_name,
+                FIRST('/api/aconex/doc?doc_no=' || replace(replace(COALESCE(s.document_no, ''), chr(39), ''), '"', '')) AS doc_aconex_url
             FROM fact_workflow_steps s
             JOIN fact_workflows w ON s.workflow_no = w.workflow_no
             LEFT JOIN (SELECT document_no, MAX(tracking_id) as document_id, MAX(aconex_url) as doc_direct_url FROM dim_documents GROUP BY document_no) d ON s.document_no = d.document_no
             WHERE w.project_package = ?
               AND s.is_overdue = true
+              AND s.step_status != 'Completed'
               AND (s.assigned_to_organization ILIKE '%shaker%' OR s.assigned_to_organization ILIKE '%ecg%'
                    OR NOT EXISTS (
                        SELECT 1 FROM fact_workflow_steps s2 
                        JOIN fact_workflows w2 ON s2.workflow_no = w2.workflow_no 
-                       WHERE w2.project_package = ? AND s2.is_overdue = true 
+                       WHERE w2.project_package = ? AND s2.is_overdue = true AND s2.step_status != 'Completed'
                          AND (s2.assigned_to_organization ILIKE '%shaker%' OR s2.assigned_to_organization ILIKE '%ecg%')
                    ))
-            ORDER BY s.days_late DESC, s.workflow_no ASC
+            GROUP BY s.workflow_no
+            ORDER BY MAX(s.days_late) DESC, s.workflow_no ASC
         """, [pid, pid]).fetchall()
 
         overdue_workflows = []
@@ -489,6 +495,9 @@ def get_project_overdue_report(project_id: str, from_date: Optional[str] = None,
                 "aconex_url": m[10]
             })
 
+        
+        # Letters strictly excluded from SSC weekly notifications and reports per management instruction
+        overdue_mails = []
         # 5. Overdue RFIs (Contract-First Resolved, excluding SCRs)
         rfi_all = con.execute(f"""
             SELECT 
@@ -617,7 +626,6 @@ def get_project_overdue_report(project_id: str, from_date: Optional[str] = None,
             f"• Total Overdue Deliverables: {total_overdue}",
             f"• Maximum Turnaround Delay: +{max_delay} Days",
             f"• Technical Review Workflows: {len(overdue_workflows)}",
-            f"• Letters & Correspondence: {len(overdue_mails)}",
             f"• Requests For Information (RFIs): {len(overdue_rfis)}",
             f"• Site Clarifications (SCR): {len(overdue_scrs)}",
             "",
@@ -751,7 +759,7 @@ def generate_project_overdue_html(
             </div>
         </div>
 
-        <!-- KPI Metrics Grid -->
+        <!-- KPI Metrics Grid (SSC Scope: Workflows, RFIs, SCRs) -->
         <div class="kpi-grid">
             <div class="kpi-cell">
                 <div class="kpi-num-red">{total_overdue}</div>
@@ -766,12 +774,12 @@ def generate_project_overdue_html(
                 <div class="kpi-lbl">Review Workflows</div>
             </div>
             <div class="kpi-cell">
-                <div class="kpi-num">{len(overdue_mails)}</div>
-                <div class="kpi-lbl">Letters Pending</div>
+                <div class="kpi-num">{len(overdue_rfis)}</div>
+                <div class="kpi-lbl">Technical RFIs</div>
             </div>
             <div class="kpi-cell">
-                <div class="kpi-num">{len(scrs) if scrs else len(overdue_rfis)}</div>
-                <div class="kpi-lbl">{'Site Clarifications (SCR)' if scrs else 'Overdue RFIs'}</div>
+                <div class="kpi-num">{len(scrs)}</div>
+                <div class="kpi-lbl">Site Clarifications (SCR)</div>
             </div>
         </div>
 
@@ -1096,8 +1104,7 @@ def generate_project_overdue_excel(
         ("Total Overdue Deliverables", report["total_overdue"]),
         ("Maximum Turnaround Delay", f"+{report['max_delay_days']} Days"),
         ("Overdue Technical Review Workflows", report["workflows_count"]),
-        ("Overdue Letters & Correspondence", report["mails_count"]),
-        ("Overdue Requests For Information (RFIs)", report["rfis_count"]),
+        ("Overdue Technical RFIs", report["rfis_count"]),
     ]
     if report["scrs_count"] > 0:
         summary_rows.append(("Overdue Site Clarifications (SCR)", report["scrs_count"]))

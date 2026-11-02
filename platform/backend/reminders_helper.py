@@ -509,7 +509,8 @@ def generate_company_html_table(target_name: str, dossier_data: dict, is_user: b
                     <tbody>
                 """
                 for m in all_pkg_mails[:15]:
-                    aconex_mail_url = m.get("aconex_url") or f"https://mea.aconex.com/MailSearch?searchQuery=mailNumber%3A%22{m.get(\'mail_no\')}%22&PROJECT_ID=1744833878"
+                    m_no = m.get('mail_no', '')
+                    aconex_mail_url = m.get("aconex_url") or f"https://mea.aconex.com/MailSearch?searchQuery=mailNumber%3A%22{m_no}%22&PROJECT_ID=1744833878"
                     html += f"""
                         <tr>
                             <td><a href="{aconex_mail_url}" class="link-btn" target="_blank" title="Open Mail in Aconex"><strong>{m.get("mail_no")}</strong> ↗</a></td>

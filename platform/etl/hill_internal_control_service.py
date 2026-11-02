@@ -228,7 +228,7 @@ def get_hill_engineer_dossier(engineer_name: str, package_filter: str = None) ->
                 w.original_due_date::VARCHAR,
                 s.date_in::VARCHAR,
                 s.date_due::VARCHAR,
-                'https://mea.aconex.com/WorkflowSearch?searchtext=' || s.workflow_no || '&projectid=1744833878' AS aconex_url,
+                '/api/aconex/doc?doc_no=' || replace(s.document_no, chr(39), '') AS aconex_url,
                 '/api/aconex/doc?doc_no=' || TRIM(BOTH '''' FROM TRIM(BOTH '"' FROM TRIM(COALESCE(s.document_no, '')))) || '%22' AS doc_aconex_url
             FROM fact_workflow_steps s
             LEFT JOIN fact_workflows w ON s.workflow_no = w.workflow_no

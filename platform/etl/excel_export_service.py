@@ -377,7 +377,18 @@ def generate_filtered_excel_export(
             rows = con.execute(f"""
                 SELECT workflow_no, workflow_name, workflow_status, initiator_organization, current_assigned_org,
                        current_assigned_user, current_step_name, overdue_steps_count, start_date::VARCHAR, original_due_date::VARCHAR,
-                       'https://mea.aconex.com/WorkflowSearch?searchtext=' || workflow_no || '&projectid=1744833878' as aconex_url
+                       COALESCE(
+                       (SELECT dl.aconex_url
+                        FROM fact_workflow_steps s
+                        JOIN doc_direct_links dl ON dl.document_no = s.document_no
+                        WHERE s.workflow_no = fact_workflows.workflow_no
+                        LIMIT 1),
+                       (SELECT 'https://mea.aconex.com/DocSearch?searchQuery=documentNumber%3A%22' || replace(s.document_no, ' ', '%20') || '%22&PROJECT_ID=1744833878'
+                        FROM fact_workflow_steps s
+                        WHERE s.workflow_no = fact_workflows.workflow_no AND s.document_no IS NOT NULL AND trim(s.document_no) != ''
+                        LIMIT 1),
+                       'https://mea.aconex.com/DocSearch?PROJECT_ID=1744833878'
+                   ) AS aconex_url
                 FROM fact_workflows
                 {where_sql}
                 ORDER BY {order_by}

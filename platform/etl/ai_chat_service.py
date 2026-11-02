@@ -480,7 +480,7 @@ def handle_workflow_query(con, q: str, pkg: str | None, is_overdue: bool, is_ar:
             s.workflow_no, s.step_name, s.document_no, s.document_title,
             s.assigned_to_organization, s.assigned_to_name,
             s.date_due::VARCHAR, s.days_late, s.is_overdue,
-            'https://mea.aconex.com/WorkflowSearch?searchtext=' || s.workflow_no || '&projectid=1744833878' AS aconex_url,
+            '/api/aconex/doc?doc_no=' || replace(document_no, chr(39), '') AS aconex_url,
             w.project_package
         FROM fact_workflow_steps s
         JOIN fact_workflows w ON s.workflow_no = w.workflow_no

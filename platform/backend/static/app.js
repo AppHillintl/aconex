@@ -747,7 +747,7 @@ function getAconexWorkflowUrl(item) {
     }
     const wfNo = String(item?.workflow_no || '').trim();
     if (wfNo) {
-        return `https://mea.aconex.com/hub/index.html?mainTarget=%2FWorkflowSearch%3Fsearchtext%3D${encodeURIComponent(wfNo)}%26projectid%3D1744833878`;
+        return `/api/aconex/doc?doc_no=${encodeURIComponent(wfNo)}`;
     }
     return `https://mea.aconex.com/hub/index.html`;
 }
@@ -3625,7 +3625,7 @@ function renderCtrlDashboard(data) {
                     </div>
                 </div>
 
-                <div class="grid grid-cols-1 sm:grid-cols-4 gap-3 pt-2 border-t border-slate-800/80">
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-slate-800/80">
                     <label class="flex items-center justify-between p-3 rounded-xl bg-slate-900/80 border border-slate-800 hover:border-slate-700 cursor-pointer transition select-none">
                         <div class="flex items-center gap-3">
                             <input type="checkbox" id="ctrl-scope-wf" onchange="toggleCtrlSectionScope('workflows')" checked class="w-4 h-4 rounded text-rose-600 focus:ring-0 bg-slate-950 border-slate-700 cursor-pointer">
@@ -3635,17 +3635,6 @@ function renderCtrlDashboard(data) {
                             </div>
                         </div>
                         <span class="text-[10px] px-2 py-0.5 rounded font-mono font-bold bg-indigo-500/20 text-indigo-400">Workflows</span>
-                    </label>
-
-                    <label class="flex items-center justify-between p-3 rounded-xl bg-slate-900/80 border border-slate-800 hover:border-slate-700 cursor-pointer transition select-none">
-                        <div class="flex items-center gap-3">
-                            <input type="checkbox" id="ctrl-scope-mail" onchange="toggleCtrlSectionScope('mail')" ${ctrlSectionScope.mail ? 'checked' : ''} class="w-4 h-4 rounded text-rose-600 focus:ring-0 bg-slate-950 border-slate-700 cursor-pointer">
-                            <div>
-                                <div class="text-xs font-bold text-slate-200">Official Letters (Optional)</div>
-                                <div class="text-[11px] text-slate-400" id="ctrl-scope-mail-count">...</div>
-                            </div>
-                        </div>
-                        <span class="text-[10px] px-2 py-0.5 rounded font-mono font-bold bg-sky-500/20 text-sky-400">Letters</span>
                     </label>
 
                     <label class="flex items-center justify-between p-3 rounded-xl bg-slate-900/80 border border-slate-800 hover:border-slate-700 cursor-pointer transition select-none">
@@ -3697,9 +3686,7 @@ function renderCtrlDashboard(data) {
                             <button id="ctrl-tab-cat-workflows" onclick="setCtrlTableCategory('workflows')" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-950 text-slate-400 hover:text-white border border-slate-800 transition">
                                 Workflows (${data.workflows_count})
                             </button>
-                            <button id="ctrl-tab-cat-mail" onclick="setCtrlTableCategory('mail')" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-950 text-slate-400 hover:text-white border border-slate-800 transition">
-                                Letters (${data.mails_count})
-                            </button>
+
                             <button id="ctrl-tab-cat-rfis" onclick="setCtrlTableCategory('rfis')" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-950 text-slate-400 hover:text-white border border-slate-800 transition">
                                 RFIs (${data.rfis_count || 0})
                             </button>
@@ -10400,3 +10387,145 @@ window.triggerDeepSyncNow = async function() {
         if (window.showToast) window.showToast("Sync Error", e.message, "error", 4000);
     }
 };
+
+// =============================================================================
+// EGIS REVIEW FOR CONSULTANTS CONTROLS & DISPATCH
+// =============================================================================
+let egisRawData = null;
+let egisOverdueOnly = true;
+
+async function loadEgisReviewData(page = 1) {
+    const pkgSelect = document.getElementById('egis-filter-pkg');
+    const selectedPkg = pkgSelect ? pkgSelect.value : 'all';
+
+    const tbody = document.getElementById('egis-table-body');
+    if (tbody) {
+        tbody.innerHTML = `<tr><td colspan="9" class="p-8 text-center text-slate-500"><i data-lucide="loader" class="w-5 h-5 animate-spin mx-auto mb-2 text-cyan-400"></i>Loading EGIS consultant review deliverables...</td></tr>`;
+        if (window.lucide) lucide.createIcons();
+    }
+
+    try {
+        const res = await fetch(`/api/controls/egis_review?package=${encodeURIComponent(selectedPkg)}`);
+        if (!res.ok) throw new Error("Failed to load EGIS review data");
+        const data = await res.json();
+        egisRawData = data;
+
+        // Populate Packages dropdown if empty
+        if (pkgSelect && pkgSelect.options.length <= 1 && data.deliverables) {
+            const pkgs = Array.from(new Set(data.deliverables.map(d => d.project_package).filter(Boolean))).sort();
+            pkgs.forEach(p => {
+                const opt = document.createElement('option');
+                opt.value = p;
+                opt.textContent = p;
+                pkgSelect.appendChild(opt);
+            });
+        }
+
+        // Update KPIs
+        const elOverdue = document.getElementById('egis-kpi-overdue');
+        const elActive = document.getElementById('egis-kpi-active');
+        const elTotal = document.getElementById('egis-kpi-total');
+        const elDelay = document.getElementById('egis-kpi-max-delay');
+        const badge = document.getElementById('badge-egis-review-count');
+
+        if (elOverdue) elOverdue.textContent = data.overdue_workflows;
+        if (elActive) elActive.textContent = data.active_workflows;
+        if (elTotal) elTotal.textContent = data.total_workflows;
+        if (elDelay) elDelay.textContent = `+${data.max_days_late}d`;
+        if (badge) {
+            badge.textContent = `${data.overdue_workflows} Overdue`;
+            badge.className = data.overdue_workflows > 0 ? "px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-rose-500/20 text-rose-400 border border-rose-500/30" : "px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30";
+        }
+
+        renderEgisTable();
+    } catch (err) {
+        if (tbody) tbody.innerHTML = `<tr><td colspan="9" class="p-6 text-center text-rose-400 font-semibold">Error: ${err.message}</td></tr>`;
+    }
+}
+
+function toggleEgisOverdueOnly() {
+    egisOverdueOnly = !egisOverdueOnly;
+    const btn = document.getElementById('egis-toggle-overdue');
+    if (btn) {
+        if (egisOverdueOnly) {
+            btn.className = "px-3 py-1.5 rounded-xl text-xs font-bold bg-rose-600 text-white transition";
+            btn.textContent = "Overdue Only";
+        } else {
+            btn.className = "px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-950 text-slate-400 hover:text-white border border-slate-800 transition";
+            btn.textContent = "All In-Review";
+        }
+    }
+    renderEgisTable();
+}
+
+function filterEgisTableLocal() {
+    renderEgisTable();
+}
+
+function renderEgisTable() {
+    const tbody = document.getElementById('egis-table-body');
+    if (!tbody || !egisRawData || !egisRawData.deliverables) return;
+
+    const searchInput = document.getElementById('egis-search-input');
+    const q = searchInput ? searchInput.value.toLowerCase().trim() : '';
+
+    let list = egisRawData.deliverables;
+    if (egisOverdueOnly) {
+        list = list.filter(d => d.is_overdue);
+    }
+    if (q) {
+        list = list.filter(d => 
+            (d.workflow_no && d.workflow_no.toLowerCase().includes(q)) ||
+            (d.document_no && d.document_no.toLowerCase().includes(q)) ||
+            (d.document_title && d.document_title.toLowerCase().includes(q)) ||
+            (d.project_package && d.project_package.toLowerCase().includes(q)) ||
+            (d.assigned_user && d.assigned_user.toLowerCase().includes(q))
+        );
+    }
+
+    if (list.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="9" class="p-8 text-center text-slate-500 font-semibold">No deliverables matching criteria.</td></tr>`;
+        return;
+    }
+
+    let rowsHtml = '';
+    list.forEach(item => {
+        const badge = item.is_overdue 
+            ? `<span class="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-rose-500/20 text-rose-400 border border-rose-500/30">+${item.days_late}d Late</span>`
+            : `<span class="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-cyan-500/20 text-cyan-400 border border-cyan-500/30">${item.step_status || 'In Review'}</span>`;
+
+        rowsHtml += `
+            <tr class="hover:bg-slate-900/60 transition group">
+                <td class="p-3 font-mono font-bold text-white">${item.workflow_no}</td>
+                <td class="p-3 font-mono font-semibold text-sky-400">${item.document_no}</td>
+                <td class="p-3 max-w-xs truncate text-slate-200" title="${escapeHtml(item.document_title)}">${escapeHtml(item.document_title)}</td>
+                <td class="p-3 font-semibold text-slate-300">${item.project_package || '-'}</td>
+                <td class="p-3 text-slate-400">${escapeHtml(item.step_name)}</td>
+                <td class="p-3 text-slate-300">${escapeHtml(item.assigned_user)}</td>
+                <td class="p-3 font-mono text-slate-400">${item.date_due}</td>
+                <td class="p-3">${badge}</td>
+                <td class="p-3 text-right">
+                    <a href="${item.aconex_url}" target="_blank" class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-cyan-500/10 hover:bg-cyan-500/25 text-cyan-400 hover:text-white border border-cyan-500/30 transition shadow-xs">
+                        <span>Open</span>
+                        <i data-lucide="external-link" class="w-3 h-3"></i>
+                    </a>
+                </td>
+            </tr>
+        `;
+    });
+
+    tbody.innerHTML = rowsHtml;
+    if (window.lucide) lucide.createIcons();
+}
+
+function downloadEgisEml() {
+    const pkgSelect = document.getElementById('egis-filter-pkg');
+    const selectedPkg = pkgSelect ? pkgSelect.value : 'all';
+    window.location.href = `/api/controls/egis_review/download_eml?package=${encodeURIComponent(selectedPkg)}`;
+}
+
+function exportEgisExcel() {
+    const pkgSelect = document.getElementById('egis-filter-pkg');
+    const selectedPkg = pkgSelect ? pkgSelect.value : 'all';
+    window.location.href = `/api/controls/egis_review/export_excel?package=${encodeURIComponent(selectedPkg)}`;
+}

@@ -40,3 +40,5 @@ aconex_cloud.duckdb
 platform/extractor/.env
 platform/extractor/browser_profile/
 platform/config/admin_auth.json
+
+platform_staging/extractor/browser_profile/
